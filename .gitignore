@@ -1,0 +1,29 @@
+# Virtualenv
+.Python
+.venv/
+bin/
+lib/
+share/
+etc/
+pyvenv.cfg
+CACHEDIR.TAG
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
