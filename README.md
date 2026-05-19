@@ -16,8 +16,8 @@ Two interfaces are provided:
 
 | Interface | File | Use case |
 |-----------|------|----------|
-| **Streamlit UI** | `app.py` | Interactive multi-turn chat with live sidebar controls |
-| **CLI** | `trace_cli.py` | Scripted/batch tracing from the terminal |
+| **Streamlit UI** | `app.py` | Interactive multi-turn chat + JSONL batch runner with live sidebar controls |
+| **CLI** | `trace_cli.py` | Single prompt or JSONL batch tracing from the terminal |
 
 ---
 
@@ -111,16 +111,18 @@ streamlit run app.py
 
 Open `http://localhost:8501`. The sidebar lets you override credentials, switch models, set system prompt, tags, temperature, and max tokens — all without restarting.
 
-### CLI
+The UI has two tabs:
+
+- **💬 Chat** — interactive multi-turn conversation with streaming output.
+- **📋 Batch** — upload a JSONL file, preview parsed prompts, run them sequentially with a live progress bar, inspect each result in expandable cards, and download `results.jsonl`.
+
+### CLI — single prompt
 
 ```bash
 # Streaming (default)
-python trace_cli.py --model llama3.1 --prompt "Explain MiCA Article 16"
+python trace_cli.py --prompt "Explain MiCA Article 16"
 
-# Non-streaming
-python trace_cli.py --model mistral --prompt "What is a CASP?" --no-stream
-
-# Full options
+# Non-streaming, full options
 python trace_cli.py \
   --model llama3.1 \
   --prompt "Summarize the ERC-4626 vault standard" \
@@ -129,8 +131,35 @@ python trace_cli.py \
   --trace-name "defi-research" \
   --tags "defi,erc4626" \
   --temperature 0.5 \
-  --max-tokens 1024
+  --max-tokens 1024 \
+  --no-stream
 ```
+
+### CLI — batch mode
+
+Feed a JSONL file where each line is a prompt object. The `prompt` key is required; all others are optional and override the CLI defaults for that entry.
+
+```jsonc
+// prompts.jsonl
+{"prompt": "What is the capital of France?"}
+{"prompt": "Compare REST vs GraphQL", "model": "mistral", "temperature": 0.2}
+{"prompt": "Translate 'hello' to Spanish", "system": "Reply only with the translation.", "tags": ["test", "i18n"]}
+```
+
+```bash
+# Run and print to stdout
+python trace_cli.py --batch-file prompts.jsonl
+
+# Run and save results
+python trace_cli.py --batch-file prompts.jsonl --output results.jsonl
+
+# Override default model for entries that don't specify one
+python trace_cli.py --batch-file prompts.jsonl --model mistral --no-stream --output results.jsonl
+```
+
+Each line in `results.jsonl` contains `line`, `session_id`, `model`, `prompt`, `response` (and `error` if the request failed). Invalid or malformed lines are written as error records and execution continues.
+
+Supported per-entry keys: `prompt`, `model`, `system`, `user_id`, `trace_name`, `tags` (list or comma-separated string), `temperature`, `max_tokens`.
 
 ---
 
@@ -155,12 +184,13 @@ Every request sends the following to Langfuse automatically:
 
 ```
 langfuse-ollama/
-├── app.py              # Streamlit UI — multi-model, session-scoped streaming chat
-├── trace_cli.py        # CLI tracer for scripted/batch use
-├── ollama_client.py    # Core client: chat_complete, chat_stream, list_models
-├── config.py           # Env-var loader (python-dotenv)
-├── requirements.txt    # Python dependencies
-├── .env.example        # Environment variable template
+├── app.py                    # Streamlit UI — chat tab + batch tab
+├── trace_cli.py              # CLI tracer — single prompt or JSONL batch
+├── ollama_client.py          # Core client: chat_complete, chat_stream, list_models
+├── config.py                 # Env-var loader (python-dotenv)
+├── requirements.txt          # Python dependencies
+├── .env.example              # Environment variable template
+├── prompts.example.jsonl     # Sample batch file showing all supported keys
 └── tests/
     ├── test_config.py          # Unit tests for config module
     ├── test_ollama_client.py   # Unit tests for ollama_client (DI-based fakes)
