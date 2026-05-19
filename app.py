@@ -4,6 +4,7 @@ Streamlit UI — multi-model, session-scoped, streaming chat with full Langfuse 
 """
 
 import html
+import json
 import streamlit as st
 import config
 import ollama_client as oc
@@ -205,6 +206,9 @@ if "session_id"    not in st.session_state: st.session_state.session_id    = oc.
 if "messages"      not in st.session_state: st.session_state.messages      = []
 if "models"        not in st.session_state: st.session_state.models        = []
 if "ollama_status" not in st.session_state: st.session_state.ollama_status = None
+if "batch_entries" not in st.session_state: st.session_state.batch_entries = []
+if "batch_parse_errors" not in st.session_state: st.session_state.batch_parse_errors = []
+if "batch_results" not in st.session_state: st.session_state.batch_results = []
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -318,72 +322,218 @@ if not lf_ok:
 if not st.session_state.ollama_status:
     st.error("❌ Ollama not reachable. Ensure `ollama serve` is running.")
 
-# ── Chat History ──────────────────────────────────────────────────────────────
-chat_area = st.container()
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab_chat, tab_batch = st.tabs(["💬 Chat", "📋 Batch"])
 
-with chat_area:
-    for msg in st.session_state.messages:
-        if msg["role"] == "user":
-            st.markdown(
-                f'<div class="chat-user">{html.escape(msg["content"])}</div>',
-                unsafe_allow_html=True,
-            )
-        elif msg["role"] == "assistant":
-            st.markdown(
-                f'<div class="chat-ai" data-model="{html.escape(model)}">{html.escape(msg["content"])}</div>',
-                unsafe_allow_html=True,
-            )
 
-# ── Input ─────────────────────────────────────────────────────────────────────
-user_input = st.chat_input("Message…", disabled=not st.session_state.ollama_status)
+# ── Chat Tab ──────────────────────────────────────────────────────────────────
+with tab_chat:
+    chat_area = st.container()
 
-if user_input and user_input.strip():
-    st.session_state.messages.append({"role": "user", "content": user_input})
-
-    # Build message list with system prompt prepended
-    full_messages = [{"role": "system", "content": system_prompt}] + st.session_state.messages
-
-    with st.spinner(f"⏳ {model} thinking…"):
-        if use_streaming:
-            partial = ""
-            placeholder = st.empty()
-            try:
-                for chunk in oc.chat_stream(
-                    messages=full_messages,
-                    model=model,
-                    session_id=st.session_state.session_id,
-                    user_id=user_id,
-                    trace_name=trace_name,
-                    tags=tags,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                ):
-                    partial += chunk
-                    placeholder.markdown(
-                        f'<div class="chat-ai" data-model="{html.escape(model)}">{html.escape(partial)}▌</div>',
-                        unsafe_allow_html=True,
-                    )
-                placeholder.empty()
-                reply = partial
-            except Exception as e:
-                st.error(f"Stream error: {e}")
-                reply = None
-        else:
-            try:
-                reply = oc.chat_complete(
-                    messages=full_messages,
-                    model=model,
-                    session_id=st.session_state.session_id,
-                    user_id=user_id,
-                    trace_name=trace_name,
-                    tags=tags,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
+    with chat_area:
+        for msg in st.session_state.messages:
+            if msg["role"] == "user":
+                st.markdown(
+                    f'<div class="chat-user">{html.escape(msg["content"])}</div>',
+                    unsafe_allow_html=True,
                 )
-            except Exception as e:
-                st.error(f"Completion error: {e}")
-                reply = None
+            elif msg["role"] == "assistant":
+                st.markdown(
+                    f'<div class="chat-ai" data-model="{html.escape(model)}">{html.escape(msg["content"])}</div>',
+                    unsafe_allow_html=True,
+                )
 
-    if reply:
-        st.session_state.messages.append({"role": "assistant", "content": reply})
-        st.rerun()
+    user_input = st.chat_input("Message…", disabled=not st.session_state.ollama_status)
+
+    if user_input and user_input.strip():
+        st.session_state.messages.append({"role": "user", "content": user_input})
+
+        full_messages = [{"role": "system", "content": system_prompt}] + st.session_state.messages
+
+        with st.spinner(f"⏳ {model} thinking…"):
+            if use_streaming:
+                partial = ""
+                placeholder = st.empty()
+                try:
+                    for chunk in oc.chat_stream(
+                        messages=full_messages,
+                        model=model,
+                        session_id=st.session_state.session_id,
+                        user_id=user_id,
+                        trace_name=trace_name,
+                        tags=tags,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    ):
+                        partial += chunk
+                        placeholder.markdown(
+                            f'<div class="chat-ai" data-model="{html.escape(model)}">{html.escape(partial)}▌</div>',
+                            unsafe_allow_html=True,
+                        )
+                    placeholder.empty()
+                    reply = partial
+                except Exception as e:
+                    st.error(f"Stream error: {e}")
+                    reply = None
+            else:
+                try:
+                    reply = oc.chat_complete(
+                        messages=full_messages,
+                        model=model,
+                        session_id=st.session_state.session_id,
+                        user_id=user_id,
+                        trace_name=trace_name,
+                        tags=tags,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                except Exception as e:
+                    st.error(f"Completion error: {e}")
+                    reply = None
+
+        if reply:
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+            st.rerun()
+
+
+# ── Batch Tab ─────────────────────────────────────────────────────────────────
+with tab_batch:
+    st.markdown("Upload a JSONL file to run prompts sequentially. Each line is a JSON object with a required `prompt` key. All other keys are optional and override the sidebar defaults for that entry.")
+    st.code('{"prompt": "What is X?"}\n{"prompt": "Compare A vs B", "model": "mistral", "temperature": 0.2}\n{"prompt": "Summarize this", "system": "Be concise.", "tags": ["test"]}', language="json")
+
+    uploaded = st.file_uploader("Batch file (.jsonl)", type=["jsonl", "json", "txt"], label_visibility="collapsed")
+
+    if uploaded is not None:
+        content = uploaded.read().decode("utf-8")
+        lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+
+        entries, parse_errors = [], []
+        for i, line in enumerate(lines, 1):
+            try:
+                obj = json.loads(line)
+                if "prompt" not in obj:
+                    parse_errors.append(f"Line {i}: missing 'prompt' key")
+                else:
+                    entries.append((i, obj))
+            except json.JSONDecodeError as exc:
+                parse_errors.append(f"Line {i}: invalid JSON — {exc}")
+
+        st.session_state.batch_entries      = entries
+        st.session_state.batch_parse_errors = parse_errors
+        st.session_state.batch_results      = []
+
+    if st.session_state.batch_parse_errors:
+        with st.expander(f"⚠️ {len(st.session_state.batch_parse_errors)} parse warning(s)"):
+            for err in st.session_state.batch_parse_errors:
+                st.warning(err)
+
+    if st.session_state.batch_entries:
+        n = len(st.session_state.batch_entries)
+        st.markdown(f"**{n} prompt(s) loaded**")
+
+        with st.expander("Preview", expanded=False):
+            for line_num, entry in st.session_state.batch_entries:
+                preview = entry["prompt"][:120] + ("…" if len(entry["prompt"]) > 120 else "")
+                extras = [f"{k}={entry[k]}" for k in ("model", "temperature", "max_tokens") if k in entry]
+                suffix = f"  ·  {', '.join(extras)}" if extras else ""
+                st.code(f"[{line_num}]{suffix}\n{preview}", language=None)
+
+        col_run, col_clear = st.columns([1, 5])
+        with col_run:
+            run_clicked = st.button("▶ Run Batch", type="primary", disabled=not st.session_state.ollama_status)
+        with col_clear:
+            if st.session_state.batch_results and st.button("🗑 Clear Results"):
+                st.session_state.batch_results = []
+                st.rerun()
+
+        if run_clicked:
+            st.session_state.batch_results = []
+            total        = len(st.session_state.batch_entries)
+            progress_bar = st.progress(0, text="Starting…")
+            status_slot  = st.empty()
+
+            for idx, (line_num, entry) in enumerate(st.session_state.batch_entries):
+                m_model       = entry.get("model",       model)
+                m_system      = entry.get("system",      system_prompt)
+                m_user_id     = entry.get("user_id",     user_id)
+                m_trace_name  = entry.get("trace_name",  trace_name)
+                raw           = entry.get("tags",        tags_raw)
+                m_tags        = [t.strip() for t in raw.split(",")] if isinstance(raw, str) else raw
+                m_temperature = entry.get("temperature", temperature)
+                m_max_tokens  = entry.get("max_tokens",  max_tokens)
+                session_id_b  = oc.new_session_id()
+
+                short = entry["prompt"][:70] + ("…" if len(entry["prompt"]) > 70 else "")
+                progress_bar.progress(idx / total, text=f"{idx + 1}/{total}: {short}")
+                status_slot.info(f"⏳ Running prompt {idx + 1} of {total}")
+
+                messages_b = [
+                    {"role": "system", "content": m_system},
+                    {"role": "user",   "content": entry["prompt"]},
+                ]
+
+                try:
+                    response = oc.chat_complete(
+                        messages=messages_b,
+                        model=m_model,
+                        session_id=session_id_b,
+                        user_id=m_user_id,
+                        trace_name=m_trace_name,
+                        tags=m_tags,
+                        temperature=m_temperature,
+                        max_tokens=m_max_tokens,
+                    )
+                    st.session_state.batch_results.append({
+                        "line":       line_num,
+                        "session_id": session_id_b,
+                        "model":      m_model,
+                        "prompt":     entry["prompt"],
+                        "response":   response,
+                        "error":      None,
+                    })
+                except Exception as exc:
+                    st.session_state.batch_results.append({
+                        "line":       line_num,
+                        "session_id": session_id_b,
+                        "model":      m_model,
+                        "prompt":     entry["prompt"],
+                        "response":   None,
+                        "error":      str(exc),
+                    })
+
+                progress_bar.progress((idx + 1) / total)
+
+            progress_bar.progress(1.0, text=f"✅ {total} prompt(s) complete")
+            status_slot.empty()
+            st.rerun()
+
+    # ── Results ───────────────────────────────────────────────────────────────
+    if st.session_state.batch_results:
+        results   = st.session_state.batch_results
+        ok_count  = sum(1 for r in results if r["error"] is None)
+        err_count = len(results) - ok_count
+
+        st.markdown(f"**Results — {ok_count} OK · {err_count} error(s)**")
+
+        jsonl_out = "\n".join(json.dumps(r, ensure_ascii=False) for r in results)
+        st.download_button(
+            "⬇ Download results.jsonl",
+            data=jsonl_out,
+            file_name="results.jsonl",
+            mime="application/jsonlines",
+        )
+
+        st.markdown("---")
+
+        for r in results:
+            icon  = "✅" if r["error"] is None else "❌"
+            label = f"{icon} [{r['line']}] {r['prompt'][:80]}{'…' if len(r['prompt']) > 80 else ''}"
+            with st.expander(label, expanded=False):
+                st.markdown(f"`{r['model']}` · session `{r['session_id'][:8]}…`")
+                st.markdown("**Prompt**")
+                st.text(r["prompt"])
+                if r["error"]:
+                    st.error(r["error"])
+                else:
+                    st.markdown("**Response**")
+                    st.markdown(r["response"])

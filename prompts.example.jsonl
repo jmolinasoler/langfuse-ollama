@@ -1,0 +1,5 @@
+{"prompt": "What is the capital of France?"}
+{"prompt": "Explain what a transformer model is in one paragraph.", "temperature": 0.3}
+{"prompt": "List three benefits of retrieval-augmented generation.", "model": "llama3.1", "tags": ["test", "rag"]}
+{"prompt": "Translate 'Hello, how are you?' into Spanish.", "system": "You are a professional translator. Reply only with the translation.", "temperature": 0.1}
+{"prompt": "Write a haiku about distributed systems.", "trace_name": "creative-test", "max_tokens": 128}
