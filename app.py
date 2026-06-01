@@ -8,6 +8,7 @@ import json
 import streamlit as st
 import config
 import ollama_client as oc
+import feedback_widget
 
 # ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -309,6 +310,9 @@ with st.sidebar:
         if st.button("🗑️ Clear Chat"):
             st.session_state.messages = []
             st.rerun()
+
+    st.markdown("---")
+    feedback_widget.render(disabled=config.FEEDBACK_DISABLED)
 
 
 # ── Main Panel ────────────────────────────────────────────────────────────────
