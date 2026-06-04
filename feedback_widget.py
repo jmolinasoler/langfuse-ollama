@@ -1,115 +1,72 @@
 """
-Featurebase feedback widget — Camino B (CDN ESM, anónimo, lazy).
-
-Carga el SDK moderno featurebase-js@1.0.3 desde esm.sh y lo inicializa en
-modo anónimo (sin JWT, sin identify). El SDK lee los toggles de
-"General → Manage modules" del workspace de Featurebase y decide qué
-superficies arrancar (feedback / messenger / changelog / surveys).
-
-Diseño:
-  - Streamlit no tiene bundler, así que NO podemos usar
-    `featurebase-js/react`. Cargamos el default export por ESM CDN y lo
-    llamamos como Featurebase({ appId }).
-  - El SDK monta el botón flotante en `document.body`. Si lo arrancamos
-    desde dentro de un iframe de components.html, queda atrapado allí.
-    Por eso inyectamos un <script type="module"> en
-    `window.parent.document.head` — same-origin con la página padre,
-    el botón flota sobre la app Streamlit real.
-  - Idempotencia: Streamlit re-ejecuta el script en cada interacción.
-    Usamos `window.parent.__featurebaseBooted` como flag para no
-    bootear dos veces.
-
-Modelo de seguridad (acordado en la fase de diseño):
-  - `FEATUREBASE_APP_ID` es público (como un Stripe publishable key) →
-    hardcodeado en este módulo, safe para distribuir.
-  - Sin JWT secret en cliente → submissions anónimas. Featurebase
-    aplica su propia moderación / antispam server-side.
-  - Carga lazy: el SDK no se descarga hasta que el usuario pulsa el
-    botón. Si nunca lo pulsa, ningún script de terceros toca la página.
-  - Versión del SDK pineada a `1.0.3`. SRI sobre el grafo ESM de esm.sh
-    no es viable (los submódulos cargan dinámicamente y el browser solo
-    valida `integrity=` en el <script> raíz). Mitigación: pin de versión
-    + opción de opt-out vía FEEDBACK_DISABLED.
-  - Metadata: NO se envía nada de la sesión Streamlit. Featurebase solo
-    ve lo que el usuario escriba en su formulario. Sin prompts, sin
-    respuestas, sin claves Langfuse, sin user_id del sidebar.
+Featurebase Feedback Integration
+Uses Featurebase SDK for anonymous feedback submission.
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 
-# Identificador público del workspace Featurebase (NO es un secreto).
 FEATUREBASE_APP_ID = "6a1dad4c4a4eaeea48c79706"
-
-# Versión pineada — actualizar a mano tras verificar release notes.
 SDK_VERSION = "1.0.3"
 SDK_URL = f"https://esm.sh/featurebase-js@{SDK_VERSION}"
 
 
-def _boot_snippet() -> str:
-    """
-    HTML que se renderiza dentro de un iframe de components.html.
-    Inyecta un <script type="module"> en el documento padre para que el
-    SDK arranque allí (no dentro del iframe height=0).
-    """
+def _get_boot_script() -> str:
+    """Generate Featurebase SDK boot script."""
     return f"""
-<script>
-  (function () {{
-    var parentWin = window.parent;
-    var parentDoc = parentWin.document;
-
-    // Idempotencia entre reruns de Streamlit.
-    if (parentWin.__featurebaseBooted) return;
-    parentWin.__featurebaseBooted = true;
-
-    var s = parentDoc.createElement('script');
-    s.type = 'module';
-    s.textContent = [
-      "import Featurebase from '{SDK_URL}';",
-      "window.Featurebase = Featurebase;",
-      "Featurebase({{ appId: '{FEATUREBASE_APP_ID}' }});"
-    ].join('\\n');
-    parentDoc.head.appendChild(s);
-  }})();
+<script type="module">
+  if (window.__fbBooted) {{ return; }}
+  window.__fbBooted = true;
+  import Featurebase from '{SDK_URL}';
+  Featurebase({{ appId: '{FEATUREBASE_APP_ID}' }});
 </script>
 """
 
 
-def render(disabled: bool = False) -> None:
+def render_feedback(disabled: bool = False) -> None:
     """
-    Monta el toggle de feedback en el contenedor Streamlit actual.
-
+    Render feedback interface with textarea and Featurebase SDK integration.
+    
     Args:
-        disabled: si True, no hace nada (opt-out vía FEEDBACK_DISABLED).
-
-    Comportamiento:
-        - Muestra un botón "💬 Send feedback".
-        - Al pulsarlo por primera vez, descarga e inicializa
-          featurebase-js. A partir de ese momento aparece el launcher
-          flotante de Featurebase (esquina inferior derecha por defecto,
-          configurable en el dashboard).
-        - Reruns posteriores de Streamlit NO re-bootean el SDK
-          (idempotencia controlada por window.parent.__featurebaseBooted).
+        disabled: If True, disable feedback functionality
     """
     if disabled:
         return
 
-    if "fb_widget_loaded" not in st.session_state:
-        st.session_state.fb_widget_loaded = False
+    st.markdown("## 💬 Send Feedback")
+    st.markdown("Share your thoughts anonymously. Your feedback helps improve this tool.")
+    st.markdown("---")
 
-    label = "💬 Send feedback" if not st.session_state.fb_widget_loaded else "💬 Feedback loaded"
-    help_text = (
-        "Loads featurebase-js (anonymous). Nothing leaves the page until "
-        "you actually submit the form."
-    )
-
-    if st.button(label, help=help_text, disabled=st.session_state.fb_widget_loaded):
-        st.session_state.fb_widget_loaded = True
+    if st.button("← Back to App", key="fb_back"):
+        st.session_state.show_feedback = False
         st.rerun()
 
-    if st.session_state.fb_widget_loaded:
-        components.html(_boot_snippet(), height=0)
-        st.caption(
-            "Feedback panel served by featurebase.app. Only what you type "
-            "in the form is sent — no prompts, responses or API keys."
-        )
+    st.markdown("---")
+    
+    feedback_text = st.text_area(
+        "Your feedback",
+        placeholder="What would you like to share? Bug reports, suggestions, or general comments...",
+        height=200,
+        key="feedback_text_input"
+    )
+    
+    st.markdown("---")
+    
+    if st.button("📤 Send Feedback", type="primary", disabled=not bool(feedback_text.strip())):
+        if not feedback_text.strip():
+            st.error("Please enter your feedback before submitting.")
+        else:
+            st.session_state.fb_loaded = True
+            st.rerun()
+    
+    if st.session_state.get("fb_loaded"):
+        st.markdown("✅ Loading feedback panel...")
+        st.markdown(_get_boot_script(), unsafe_allow_html=True)
+
+
+def main():
+    """Legacy main function for backward compatibility."""
+    render_feedback()
+
+
+if __name__ == "__main__":
+    main()
