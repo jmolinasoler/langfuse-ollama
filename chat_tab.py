@@ -1,4 +1,5 @@
 import html as _html
+from typing import Optional
 
 import streamlit as st
 import ollama_client as oc
@@ -16,8 +17,9 @@ def render(cfg: SidebarConfig) -> None:
                     unsafe_allow_html=True,
                 )
             elif msg["role"] == "assistant":
+                model = msg.get("model", cfg.model)
                 st.markdown(
-                    f'<div class="chat-ai" data-model="{_html.escape(cfg.model)}">{_html.escape(msg["content"])}</div>',
+                    f'<div class="chat-ai" data-model="{_html.escape(model)}">{_html.escape(msg["content"])}</div>',
                     unsafe_allow_html=True,
                 )
 
@@ -27,23 +29,43 @@ def render(cfg: SidebarConfig) -> None:
         return
 
     st.session_state.messages.append({"role": "user", "content": user_input})
-    full_messages = [{"role": "system", "content": cfg.system_prompt}] + st.session_state.messages
+
+    with chat_area:
+        st.markdown(
+            f'<div class="chat-user">{_html.escape(user_input)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    full_messages = [{"role": "system", "content": cfg.system_prompt}] + [
+        {"role": m["role"], "content": m["content"]} for m in st.session_state.messages
+    ]
 
     with st.spinner(f"⏳ {cfg.model} thinking…"):
         reply = _call_model(cfg, full_messages)
 
     if reply:
-        st.session_state.messages.append({"role": "assistant", "content": reply})
+        st.session_state.messages.append(
+            {"role": "assistant", "content": reply, "model": cfg.model}
+        )
         st.rerun()
 
 
-def _call_model(cfg: SidebarConfig, full_messages: list) -> str | None:
+def _client(cfg: SidebarConfig):
+    return oc.get_chat_client(
+        ollama_url=cfg.ollama_url,
+        lf_public_key=cfg.lf_public_key,
+        lf_secret_key=cfg.lf_secret_key,
+        lf_host=cfg.lf_url,
+    )
+
+
+def _call_model(cfg: SidebarConfig, full_messages: list) -> Optional[str]:
     if cfg.use_streaming:
         return _stream(cfg, full_messages)
     return _complete(cfg, full_messages)
 
 
-def _stream(cfg: SidebarConfig, full_messages: list) -> str | None:
+def _stream(cfg: SidebarConfig, full_messages: list) -> Optional[str]:
     partial = ""
     placeholder = st.empty()
     try:
@@ -56,6 +78,8 @@ def _stream(cfg: SidebarConfig, full_messages: list) -> str | None:
             tags=cfg.tags,
             temperature=cfg.temperature,
             max_tokens=cfg.max_tokens,
+            client=_client(cfg),
+            lf_public_key=cfg.lf_public_key,
         ):
             partial += chunk
             placeholder.markdown(
@@ -69,7 +93,7 @@ def _stream(cfg: SidebarConfig, full_messages: list) -> str | None:
         return None
 
 
-def _complete(cfg: SidebarConfig, full_messages: list) -> str | None:
+def _complete(cfg: SidebarConfig, full_messages: list) -> Optional[str]:
     try:
         return oc.chat_complete(
             messages=full_messages,
@@ -80,6 +104,8 @@ def _complete(cfg: SidebarConfig, full_messages: list) -> str | None:
             tags=cfg.tags,
             temperature=cfg.temperature,
             max_tokens=cfg.max_tokens,
+            client=_client(cfg),
+            lf_public_key=cfg.lf_public_key,
         )
     except Exception as e:
         st.error(f"Completion error: {e}")

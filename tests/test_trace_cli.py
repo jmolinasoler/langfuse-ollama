@@ -2,192 +2,139 @@
 Tests para trace_cli.py — unittest stdlib.
 Ejecutar: python3 -m unittest tests.test_trace_cli -v
 
-Verifica parsing de argumentos e invocación correcta de ollama_client.
+Invocan main() real con sys.argv parcheado y ollama_client mockeado:
+testean el parser y el wiring de verdad, sin Ollama ni Langfuse activos.
 """
 
-import unittest
-from unittest.mock import patch, MagicMock, call
-import importlib
 import io
-import sys
+import json
+import os
+import tempfile
+import unittest
+from unittest.mock import patch, MagicMock
+import importlib
 
 
-class TestCliArgParsing(unittest.TestCase):
-    """Verifica que argparse parsea correctamente los argumentos del CLI."""
+def _run_cli(argv, stream_chunks=None, complete_response="ok"):
+    """Ejecuta trace_cli.main() con mocks. Retorna (stdout, mocks)."""
+    mocks = {}
+    with patch("ollama_client.get_chat_client", return_value=MagicMock()) as m_client, \
+         patch("ollama_client.chat_stream") as m_stream, \
+         patch("ollama_client.chat_complete") as m_complete, \
+         patch("ollama_client.flush") as m_flush, \
+         patch("ollama_client.new_session_id", return_value="fake-session-id"), \
+         patch("sys.argv", ["trace_cli.py"] + argv):
+        m_stream.side_effect = lambda **kw: iter(stream_chunks or ["Hello", " ", "World"])
+        m_complete.return_value = complete_response
+        mocks.update(client=m_client, stream=m_stream, complete=m_complete, flush=m_flush)
 
-    def _parse(self, args_list):
-        """Helper: importa trace_cli y ejecuta el parser con args dados."""
-        import trace_cli
-        trace_cli = importlib.reload(trace_cli)
-        import argparse
-        parser = argparse.ArgumentParser(description="Langfuse × Ollama CLI Tracer")
-        parser.add_argument("--model",       default="llama3.1")
-        parser.add_argument("--prompt",      required=True)
-        parser.add_argument("--system",      default="You are a helpful assistant.")
-        parser.add_argument("--user-id",     default="cli-user")
-        parser.add_argument("--trace-name",  default="ollama-cli")
-        parser.add_argument("--tags",        default="cli,ollama")
-        parser.add_argument("--temperature", type=float, default=0.7)
-        parser.add_argument("--max-tokens",  type=int, default=2048)
-        parser.add_argument("--stream",      action="store_true", default=True)
-        parser.add_argument("--no-stream",   action="store_false", dest="stream")
-        return parser.parse_args(args_list)
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            import trace_cli
+            trace_cli = importlib.reload(trace_cli)
+            trace_cli.main()
+    return captured.getvalue(), mocks
 
-    def test_minimal_args(self):
-        args = self._parse(["--prompt", "Hello"])
-        self.assertEqual(args.prompt, "Hello")
-        self.assertEqual(args.model, "llama3.1")
-        self.assertTrue(args.stream)
+
+class TestCliSingleStream(unittest.TestCase):
+
+    def test_stream_mode_calls_chat_stream(self):
+        import config
+        _, mocks = _run_cli(["--prompt", "Test prompt"])
+        mocks["stream"].assert_called_once()
+        kwargs = mocks["stream"].call_args.kwargs
+        self.assertEqual(kwargs["model"], config.DEFAULT_MODEL)
+        self.assertEqual(kwargs["session_id"], "fake-session-id")
+        self.assertEqual(len(kwargs["messages"]), 2)  # system + user
+
+    def test_stream_output_contains_chunks(self):
+        out, _ = _run_cli(["--prompt", "Test"], stream_chunks=["Alpha", "Beta"])
+        self.assertIn("Alpha", out)
+        self.assertIn("Beta", out)
+
+    def test_session_id_printed(self):
+        out, _ = _run_cli(["--prompt", "Test"])
+        self.assertIn("fake-session-id", out)
+
+
+class TestCliSingleComplete(unittest.TestCase):
+
+    def test_no_stream_calls_chat_complete(self):
+        _, mocks = _run_cli(["--prompt", "Test", "--no-stream"])
+        mocks["complete"].assert_called_once()
+        mocks["stream"].assert_not_called()
+
+    def test_no_stream_output_contains_response(self):
+        out, _ = _run_cli(["--prompt", "Test", "--no-stream"],
+                          complete_response="Full response text")
+        self.assertIn("Full response text", out)
+
+
+class TestCliArgWiring(unittest.TestCase):
+    """Los argumentos CLI llegan hasta la llamada al modelo."""
+
+    def _kwargs(self, argv):
+        _, mocks = _run_cli(argv + ["--no-stream"])
+        return mocks["complete"].call_args.kwargs
 
     def test_custom_model(self):
-        args = self._parse(["--prompt", "Hi", "--model", "mistral"])
-        self.assertEqual(args.model, "mistral")
-
-    def test_no_stream_flag(self):
-        args = self._parse(["--prompt", "Hi", "--no-stream"])
-        self.assertFalse(args.stream)
+        self.assertEqual(self._kwargs(["--prompt", "Hi", "--model", "mistral"])["model"], "mistral")
 
     def test_custom_temperature(self):
-        args = self._parse(["--prompt", "Hi", "--temperature", "1.2"])
-        self.assertAlmostEqual(args.temperature, 1.2)
+        self.assertAlmostEqual(self._kwargs(["--prompt", "Hi", "--temperature", "1.2"])["temperature"], 1.2)
 
     def test_custom_max_tokens(self):
-        args = self._parse(["--prompt", "Hi", "--max-tokens", "4096"])
-        self.assertEqual(args.max_tokens, 4096)
+        self.assertEqual(self._kwargs(["--prompt", "Hi", "--max-tokens", "4096"])["max_tokens"], 4096)
 
-    def test_custom_tags(self):
-        args = self._parse(["--prompt", "Hi", "--tags", "mica,compliance,test"])
-        self.assertEqual(args.tags, "mica,compliance,test")
+    def test_tags_parsed_to_list(self):
+        self.assertEqual(self._kwargs(["--prompt", "Hi", "--tags", "mica,compliance,test"])["tags"],
+                         ["mica", "compliance", "test"])
 
     def test_custom_user_id(self):
-        args = self._parse(["--prompt", "Hi", "--user-id", "julio"])
-        self.assertEqual(args.user_id, "julio")
+        self.assertEqual(self._kwargs(["--prompt", "Hi", "--user-id", "julio"])["user_id"], "julio")
 
     def test_custom_trace_name(self):
-        args = self._parse(["--prompt", "Hi", "--trace-name", "audit-trace"])
-        self.assertEqual(args.trace_name, "audit-trace")
+        self.assertEqual(self._kwargs(["--prompt", "Hi", "--trace-name", "audit"])["trace_name"], "audit")
 
-    def test_custom_system_prompt(self):
-        args = self._parse(["--prompt", "Hi", "--system", "Be concise."])
-        self.assertEqual(args.system, "Be concise.")
-
-
-class TestCliStreamExecution(unittest.TestCase):
-    """Verifica que main() invoca chat_stream cuando streaming está activo."""
-
-    @patch("ollama_client.chat_stream")
-    @patch("ollama_client.new_session_id", return_value="fake-session-id")
-    def test_stream_mode_calls_chat_stream(self, mock_sid, mock_stream):
-        mock_stream.return_value = iter(["Hello", " ", "World"])
-
-        with patch("sys.argv", ["trace_cli.py", "--prompt", "Test prompt"]):
-            captured = io.StringIO()
-            with patch("sys.stdout", captured):
-                import trace_cli
-                trace_cli = importlib.reload(trace_cli)
-                trace_cli.main()
-
-        mock_stream.assert_called_once()
-        call_kwargs = mock_stream.call_args
-        self.assertEqual(call_kwargs.kwargs["model"], "llama3.1")
-        self.assertEqual(call_kwargs.kwargs["session_id"], "fake-session-id")
-        self.assertEqual(len(call_kwargs.kwargs["messages"]), 2)  # system + user
-
-    @patch("ollama_client.chat_stream")
-    @patch("ollama_client.new_session_id", return_value="fake-session-id")
-    def test_stream_output_contains_chunks(self, mock_sid, mock_stream):
-        mock_stream.return_value = iter(["Alpha", "Beta"])
-
-        with patch("sys.argv", ["trace_cli.py", "--prompt", "Test"]):
-            captured = io.StringIO()
-            with patch("sys.stdout", captured):
-                import trace_cli
-                trace_cli = importlib.reload(trace_cli)
-                trace_cli.main()
-
-        output = captured.getvalue()
-        self.assertIn("Alpha", output)
-        self.assertIn("Beta", output)
+    def test_messages_include_system_and_user(self):
+        messages = self._kwargs(["--prompt", "Explain MiCA", "--system", "Be technical"])["messages"]
+        self.assertEqual(messages[0], {"role": "system", "content": "Be technical"})
+        self.assertEqual(messages[1], {"role": "user", "content": "Explain MiCA"})
 
 
-class TestCliCompleteExecution(unittest.TestCase):
-    """Verifica que main() invoca chat_complete cuando --no-stream."""
+class TestCliBatch(unittest.TestCase):
 
-    @patch("ollama_client.chat_complete")
-    @patch("ollama_client.new_session_id", return_value="fake-session-id")
-    def test_no_stream_calls_chat_complete(self, mock_sid, mock_complete):
-        mock_complete.return_value = "Complete response"
+    def _write_batch(self, lines):
+        fh = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8")
+        fh.write("\n".join(lines))
+        fh.close()
+        self.addCleanup(os.unlink, fh.name)
+        return fh.name
 
-        with patch("sys.argv", ["trace_cli.py", "--prompt", "Test", "--no-stream"]):
-            captured = io.StringIO()
-            with patch("sys.stdout", captured):
-                import trace_cli
-                trace_cli = importlib.reload(trace_cli)
-                trace_cli.main()
+    def test_batch_runs_all_entries(self):
+        path = self._write_batch(['{"prompt": "one"}', '{"prompt": "two"}'])
+        _, mocks = _run_cli(["--batch-file", path, "--no-stream"])
+        self.assertEqual(mocks["complete"].call_count, 2)
 
-        mock_complete.assert_called_once()
+    def test_batch_entry_overrides_model(self):
+        path = self._write_batch(['{"prompt": "x", "model": "mistral"}'])
+        _, mocks = _run_cli(["--batch-file", path, "--no-stream"])
+        self.assertEqual(mocks["complete"].call_args.kwargs["model"], "mistral")
 
-    @patch("ollama_client.chat_complete")
-    @patch("ollama_client.new_session_id", return_value="fake-session-id")
-    def test_no_stream_output_contains_response(self, mock_sid, mock_complete):
-        mock_complete.return_value = "Full response text"
+    def test_batch_output_file_includes_errors_and_results(self):
+        path = self._write_batch(['not json', '{"model": "x"}', '{"prompt": "ok"}'])
+        out_path = path + ".out"
+        self.addCleanup(lambda: os.path.exists(out_path) and os.unlink(out_path))
 
-        with patch("sys.argv", ["trace_cli.py", "--prompt", "Test", "--no-stream"]):
-            captured = io.StringIO()
-            with patch("sys.stdout", captured):
-                import trace_cli
-                trace_cli = importlib.reload(trace_cli)
-                trace_cli.main()
+        _run_cli(["--batch-file", path, "--no-stream", "--output", out_path])
 
-        output = captured.getvalue()
-        self.assertIn("Full response text", output)
-
-
-class TestCliMessageConstruction(unittest.TestCase):
-    """Verifica que los mensajes se construyen correctamente."""
-
-    @patch("ollama_client.chat_complete")
-    @patch("ollama_client.new_session_id", return_value="s1")
-    def test_messages_include_system_and_user(self, mock_sid, mock_complete):
-        mock_complete.return_value = "ok"
-
-        with patch("sys.argv", [
-            "trace_cli.py",
-            "--prompt", "Explain MiCA",
-            "--system", "Be technical",
-            "--no-stream",
-        ]):
-            captured = io.StringIO()
-            with patch("sys.stdout", captured):
-                import trace_cli
-                trace_cli = importlib.reload(trace_cli)
-                trace_cli.main()
-
-        messages = mock_complete.call_args.kwargs["messages"]
-        self.assertEqual(messages[0]["role"], "system")
-        self.assertEqual(messages[0]["content"], "Be technical")
-        self.assertEqual(messages[1]["role"], "user")
-        self.assertEqual(messages[1]["content"], "Explain MiCA")
-
-    @patch("ollama_client.chat_complete")
-    @patch("ollama_client.new_session_id", return_value="s1")
-    def test_tags_parsed_correctly(self, mock_sid, mock_complete):
-        mock_complete.return_value = "ok"
-
-        with patch("sys.argv", [
-            "trace_cli.py",
-            "--prompt", "Hi",
-            "--tags", "mica,compliance,test",
-            "--no-stream",
-        ]):
-            captured = io.StringIO()
-            with patch("sys.stdout", captured):
-                import trace_cli
-                trace_cli = importlib.reload(trace_cli)
-                trace_cli.main()
-
-        tags = mock_complete.call_args.kwargs["tags"]
-        self.assertEqual(tags, ["mica", "compliance", "test"])
+        with open(out_path, encoding="utf-8") as f:
+            records = [json.loads(l) for l in f if l.strip()]
+        self.assertEqual(len(records), 3)
+        self.assertIn("invalid JSON", records[0]["error"])
+        self.assertIn("missing 'prompt' key", records[1]["error"])
+        self.assertEqual(records[2]["response"], "ok")
+        self.assertEqual(records[2]["line"], 3)
 
 
 if __name__ == "__main__":

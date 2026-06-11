@@ -28,8 +28,9 @@ if "ollama_status"      not in st.session_state: st.session_state.ollama_status 
 if "batch_entries"      not in st.session_state: st.session_state.batch_entries      = []
 if "batch_parse_errors" not in st.session_state: st.session_state.batch_parse_errors = []
 if "batch_results"      not in st.session_state: st.session_state.batch_results      = []
-if "show_wizard" not in st.session_state:
-    st.session_state.show_wizard = False
+if "batch_running"      not in st.session_state: st.session_state.batch_running      = False
+if "batch_pos"          not in st.session_state: st.session_state.batch_pos          = 0
+if "show_feedback"      not in st.session_state: st.session_state.show_feedback      = False
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 cfg = sidebar.render()
@@ -49,9 +50,6 @@ with col_feedback:
         st.rerun()
 
 # ── Show Feedback or Main App ──────────────────────────────────────────────
-if "show_feedback" not in st.session_state:
-    st.session_state.show_feedback = False
-
 if st.session_state.show_feedback:
     import feedback_widget
     feedback_widget.render_feedback(disabled=config.FEEDBACK_DISABLED)

@@ -16,62 +16,39 @@ Supported per-entry keys: prompt (required), model, system, user_id, trace_name,
 import argparse
 import json
 import sys
+
+import config
+import batch_runner as br
 import ollama_client as oc
 
 
-def _run_one(args, prompt, system, model, user_id, trace_name, tags, temperature, max_tokens):
-    """Send a single prompt and return the full response string."""
-    session_id = oc.new_session_id()
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user",   "content": prompt},
-    ]
-
-    print(f"\n[session: {session_id}] [{model}]\n{'─'*60}")
-
-    if args.stream:
-        chunks = []
-        for chunk in oc.chat_stream(
-            messages=messages,
-            model=model,
-            session_id=session_id,
-            user_id=user_id,
-            trace_name=trace_name,
-            tags=tags,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        ):
-            print(chunk, end="", flush=True)
-            chunks.append(chunk)
-        print(f"\n{'─'*60}\n[trace sent → Langfuse]")
-        return session_id, "".join(chunks)
-    else:
-        reply = oc.chat_complete(
-            messages=messages,
-            model=model,
-            session_id=session_id,
-            user_id=user_id,
-            trace_name=trace_name,
-            tags=tags,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        print(reply)
-        print(f"\n{'─'*60}\n[trace sent → Langfuse]")
-        return session_id, reply
+def _streaming_chat(**kwargs):
+    """chat_fn para batch_runner: imprime chunks a stdout y retorna el texto completo."""
+    chunks = []
+    for chunk in oc.chat_stream(**kwargs):
+        print(chunk, end="", flush=True)
+        chunks.append(chunk)
+    print()
+    return "".join(chunks)
 
 
-def _parse_tags(value, fallback):
-    """Accept a list or comma-separated string; return a list."""
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str):
-        return [t.strip() for t in value.split(",")]
-    return fallback
+def _run_entry(args, line_num, entry, defaults, client):
+    print(f"\n[{entry.get('model', defaults.model)}]\n{'─'*60}")
+    result = br.run_entry(
+        line_num, entry, defaults,
+        client=client,
+        lf_public_key=config.LANGFUSE_PUBLIC_KEY or None,
+        chat_fn=_streaming_chat if args.stream else None,
+    )
+    if result["error"]:
+        print(f"Error: {result['error']}", file=sys.stderr)
+    elif not args.stream:
+        print(result["response"])
+    print(f"{'─'*60}\n[session: {result['session_id']}]")
+    return result
 
 
 def main():
-    oc.init_langfuse_env()
     parser = argparse.ArgumentParser(description="Langfuse × Ollama CLI Tracer")
 
     group = parser.add_mutually_exclusive_group(required=True)
@@ -79,101 +56,80 @@ def main():
     group.add_argument("--batch-file", help="JSONL file — one prompt object per line")
 
     parser.add_argument("--output",      help="Write batch results to this JSONL file")
-    parser.add_argument("--model",       default="llama3.1")
-    parser.add_argument("--system",      default="You are a helpful assistant.")
+    parser.add_argument("--model",       default=config.DEFAULT_MODEL)
+    parser.add_argument("--system",      default=config.DEFAULT_SYSTEM_PROMPT)
     parser.add_argument("--user-id",     default="cli-user")
     parser.add_argument("--trace-name",  default="ollama-cli")
     parser.add_argument("--tags",        default="cli,ollama")
+    parser.add_argument("--stream",      action=argparse.BooleanOptionalAction, default=True,
+                        help="Stream tokens to stdout (default: on)")
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--max-tokens",  type=int,   default=2048)
-    parser.add_argument("--stream",      action="store_true",  default=True)
-    parser.add_argument("--no-stream",   action="store_false", dest="stream")
     args = parser.parse_args()
 
-    default_tags = _parse_tags(args.tags, ["cli", "ollama"])
+    defaults = br.BatchDefaults(
+        model=args.model,
+        system=args.system,
+        user_id=args.user_id,
+        trace_name=args.trace_name,
+        tags=br.normalize_tags(args.tags, ["cli", "ollama"]),
+        temperature=args.temperature,
+        max_tokens=args.max_tokens,
+    )
+    client = oc.get_chat_client(
+        ollama_url=config.OLLAMA_BASE_URL,
+        lf_public_key=config.LANGFUSE_PUBLIC_KEY,
+        lf_secret_key=config.LANGFUSE_SECRET_KEY,
+        lf_host=config.LANGFUSE_BASE_URL,
+    )
 
     # ── Single mode ──────────────────────────────────────────────────────────
     if args.prompt:
-        _run_one(
-            args,
-            prompt=args.prompt,
-            system=args.system,
-            model=args.model,
-            user_id=args.user_id,
-            trace_name=args.trace_name,
-            tags=default_tags,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-        )
+        _run_entry(args, 1, {"prompt": args.prompt}, defaults, client)
+        _finish()
         return
 
     # ── Batch mode ───────────────────────────────────────────────────────────
     try:
         with open(args.batch_file, encoding="utf-8") as f:
-            lines = [ln.strip() for ln in f if ln.strip()]
+            text = f.read()
     except FileNotFoundError:
         print(f"Error: file not found: {args.batch_file}", file=sys.stderr)
         sys.exit(1)
 
-    total = len(lines)
+    entries, parse_errors = br.parse_jsonl(text)
+    total = len(entries)
     print(f"[batch] {total} prompt(s) — default model: {args.model}")
 
     out_fh = open(args.output, "w", encoding="utf-8") if args.output else None
 
     try:
-        for i, line in enumerate(lines, 1):
-            print(f"\n[batch {i}/{total}]", end="")
-
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError as exc:
-                msg = f"line {i}: invalid JSON — {exc}"
-                print(f"\n[batch] {msg}", file=sys.stderr)
-                if out_fh:
-                    out_fh.write(json.dumps({"line": i, "error": str(exc)}) + "\n")
-                    out_fh.flush()
-                continue
-
-            if "prompt" not in entry:
-                print(f"\n[batch] line {i}: missing 'prompt' key — skipping", file=sys.stderr)
-                continue
-
-            model       = entry.get("model",       args.model)
-            system      = entry.get("system",      args.system)
-            user_id     = entry.get("user_id",     args.user_id)
-            trace_name  = entry.get("trace_name",  args.trace_name)
-            tags        = _parse_tags(entry.get("tags", args.tags), default_tags)
-            temperature = entry.get("temperature", args.temperature)
-            max_tokens  = entry.get("max_tokens",  args.max_tokens)
-
-            session_id, response = _run_one(
-                args,
-                prompt=entry["prompt"],
-                system=system,
-                model=model,
-                user_id=user_id,
-                trace_name=trace_name,
-                tags=tags,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-
+        for line_num, msg in parse_errors:
+            print(f"[batch] line {line_num}: {msg} — skipping", file=sys.stderr)
             if out_fh:
-                out_fh.write(json.dumps({
-                    "line":       i,
-                    "session_id": session_id,
-                    "model":      model,
-                    "prompt":     entry["prompt"],
-                    "response":   response,
-                }, ensure_ascii=False) + "\n")
+                out_fh.write(json.dumps({"line": line_num, "error": msg}) + "\n")
                 out_fh.flush()
 
+        for i, (line_num, entry) in enumerate(entries, 1):
+            print(f"\n[batch {i}/{total}]", end="")
+            result = _run_entry(args, line_num, entry, defaults, client)
+            if out_fh:
+                out_fh.write(json.dumps(result, ensure_ascii=False) + "\n")
+                out_fh.flush()
     finally:
         if out_fh:
             out_fh.close()
             print(f"\n[batch] results written → {args.output}")
 
     print(f"\n[batch] done — {total} prompt(s) processed")
+    _finish()
+
+
+def _finish():
+    """Garantiza que los traces bufferizados salen antes de terminar el proceso."""
+    if config.langfuse_configured():
+        oc.flush(config.LANGFUSE_PUBLIC_KEY)
+        print("[traces flushed → Langfuse]")
 
 
 if __name__ == "__main__":

@@ -3,13 +3,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def get_required(key: str) -> str:
-    """Obtiene variable de entorno obligatoria. Lanza EnvironmentError si no existe."""
-    val = os.getenv(key, "").strip()
-    if not val:
-        raise EnvironmentError(f"Missing required env var: {key}")
-    return val
-
 LANGFUSE_PUBLIC_KEY  = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_SECRET_KEY  = os.getenv("LANGFUSE_SECRET_KEY", "")
 LANGFUSE_BASE_URL    = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")

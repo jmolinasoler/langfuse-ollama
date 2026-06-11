@@ -1,6 +1,7 @@
 import json
 
 import streamlit as st
+import batch_runner as br
 import ollama_client as oc
 from sidebar import SidebarConfig
 
@@ -23,15 +24,18 @@ def render(cfg: SidebarConfig) -> None:
     )
 
     if uploaded is not None:
-        _parse_upload(uploaded)
+        _parse_if_new(uploaded)
 
     if st.session_state.batch_parse_errors:
         with st.expander(f"⚠️ {len(st.session_state.batch_parse_errors)} parse warning(s)"):
-            for err in st.session_state.batch_parse_errors:
-                st.warning(err)
+            for line_num, msg in st.session_state.batch_parse_errors:
+                st.warning(f"Line {line_num}: {msg}")
 
     if st.session_state.batch_entries:
-        _render_entries(cfg)
+        _render_controls(cfg)
+
+    if st.session_state.batch_running:
+        _run_step(cfg)
 
     if st.session_state.batch_results:
         _render_results()
@@ -39,27 +43,25 @@ def render(cfg: SidebarConfig) -> None:
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _parse_upload(uploaded) -> None:
-    content = uploaded.read().decode("utf-8")
-    lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+def _file_key(uploaded) -> str:
+    return getattr(uploaded, "file_id", None) or f"{uploaded.name}:{uploaded.size}"
 
-    entries, parse_errors = [], []
-    for i, line in enumerate(lines, 1):
-        try:
-            obj = json.loads(line)
-            if "prompt" not in obj:
-                parse_errors.append(f"Line {i}: missing 'prompt' key")
-            else:
-                entries.append((i, obj))
-        except json.JSONDecodeError as exc:
-            parse_errors.append(f"Line {i}: invalid JSON — {exc}")
 
+def _parse_if_new(uploaded) -> None:
+    """Parsea solo cuando cambia el archivo — un rerun no debe borrar resultados."""
+    key = _file_key(uploaded)
+    if st.session_state.get("batch_file_key") == key:
+        return
+    entries, errors = br.parse_jsonl(uploaded.read().decode("utf-8"))
+    st.session_state.batch_file_key     = key
     st.session_state.batch_entries      = entries
-    st.session_state.batch_parse_errors = parse_errors
+    st.session_state.batch_parse_errors = errors
     st.session_state.batch_results      = []
+    st.session_state.batch_running      = False
+    st.session_state.batch_pos          = 0
 
 
-def _render_entries(cfg: SidebarConfig) -> None:
+def _render_controls(cfg: SidebarConfig) -> None:
     n = len(st.session_state.batch_entries)
     st.markdown(f"**{n} prompt(s) loaded**")
 
@@ -70,77 +72,60 @@ def _render_entries(cfg: SidebarConfig) -> None:
             suffix = f"  ·  {', '.join(extras)}" if extras else ""
             st.code(f"[{line_num}]{suffix}\n{preview}", language=None)
 
-    col_run, col_clear = st.columns([1, 5])
+    running = st.session_state.batch_running
+    col_run, col_stop, col_clear = st.columns([1, 1, 4])
     with col_run:
-        run_clicked = st.button("▶ Run Batch", type="primary", disabled=not st.session_state.ollama_status)
+        if st.button("▶ Run Batch", type="primary",
+                     disabled=running or not st.session_state.ollama_status):
+            st.session_state.batch_running = True
+            st.session_state.batch_pos     = 0
+            st.session_state.batch_results = []
+            st.rerun()
+    with col_stop:
+        if running and st.button("⏹ Cancel"):
+            st.session_state.batch_running = False
+            st.rerun()
     with col_clear:
-        if st.session_state.batch_results and st.button("🗑 Clear Results"):
+        if not running and st.session_state.batch_results and st.button("🗑 Clear Results"):
             st.session_state.batch_results = []
             st.rerun()
 
-    if run_clicked:
-        _run_batch(cfg)
 
+def _run_step(cfg: SidebarConfig) -> None:
+    """Procesa UNA entrada por rerun: progreso real, cancelable, resultados parciales."""
+    entries = st.session_state.batch_entries
+    pos     = st.session_state.batch_pos
+    total   = len(entries)
 
-def _run_batch(cfg: SidebarConfig) -> None:
-    st.session_state.batch_results = []
-    total        = len(st.session_state.batch_entries)
-    progress_bar = st.progress(0, text="Starting…")
-    status_slot  = st.empty()
+    if pos >= total:
+        st.session_state.batch_running = False
+        st.success(f"✅ {total} prompt(s) complete")
+        return
 
-    for idx, (line_num, entry) in enumerate(st.session_state.batch_entries):
-        m_model       = entry.get("model",       cfg.model)
-        m_system      = entry.get("system",      cfg.system_prompt)
-        m_user_id     = entry.get("user_id",     cfg.user_id)
-        m_trace_name  = entry.get("trace_name",  cfg.trace_name)
-        raw           = entry.get("tags",        cfg.tags_raw)
-        m_tags        = [t.strip() for t in raw.split(",")] if isinstance(raw, str) else raw
-        m_temperature = entry.get("temperature", cfg.temperature)
-        m_max_tokens  = entry.get("max_tokens",  cfg.max_tokens)
-        session_id_b  = oc.new_session_id()
+    line_num, entry = entries[pos]
+    short = entry["prompt"][:70] + ("…" if len(entry["prompt"]) > 70 else "")
+    st.progress(pos / total, text=f"{pos + 1}/{total}: {short}")
 
-        short = entry["prompt"][:70] + ("…" if len(entry["prompt"]) > 70 else "")
-        progress_bar.progress(idx / total, text=f"{idx + 1}/{total}: {short}")
-        status_slot.info(f"⏳ Running prompt {idx + 1} of {total}")
+    defaults = br.BatchDefaults(
+        model=cfg.model,
+        system=cfg.system_prompt,
+        user_id=cfg.user_id,
+        trace_name=cfg.trace_name,
+        tags=cfg.tags,
+        temperature=cfg.temperature,
+        max_tokens=cfg.max_tokens,
+    )
+    client = oc.get_chat_client(
+        ollama_url=cfg.ollama_url,
+        lf_public_key=cfg.lf_public_key,
+        lf_secret_key=cfg.lf_secret_key,
+        lf_host=cfg.lf_url,
+    )
 
-        messages_b = [
-            {"role": "system", "content": m_system},
-            {"role": "user",   "content": entry["prompt"]},
-        ]
-
-        try:
-            response = oc.chat_complete(
-                messages=messages_b,
-                model=m_model,
-                session_id=session_id_b,
-                user_id=m_user_id,
-                trace_name=m_trace_name,
-                tags=m_tags,
-                temperature=m_temperature,
-                max_tokens=m_max_tokens,
-            )
-            st.session_state.batch_results.append({
-                "line":       line_num,
-                "session_id": session_id_b,
-                "model":      m_model,
-                "prompt":     entry["prompt"],
-                "response":   response,
-                "error":      None,
-            })
-        except Exception as exc:
-            st.session_state.batch_results.append({
-                "line":       line_num,
-                "session_id": session_id_b,
-                "model":      m_model,
-                "prompt":     entry["prompt"],
-                "response":   None,
-                "error":      str(exc),
-            })
-
-        progress_bar.progress((idx + 1) / total)
-
-    progress_bar.progress(1.0, text=f"✅ {total} prompt(s) complete")
-    status_slot.empty()
+    result = br.run_entry(line_num, entry, defaults,
+                          client=client, lf_public_key=cfg.lf_public_key)
+    st.session_state.batch_results.append(result)
+    st.session_state.batch_pos = pos + 1
     st.rerun()
 
 
