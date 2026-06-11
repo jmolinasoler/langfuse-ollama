@@ -3,8 +3,8 @@
 > Full observability for local [Ollama](https://ollama.com) models via [Langfuse](https://langfuse.com) using the OpenAI-compatible drop-in wrapper.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Langfuse](https://img.shields.io/badge/Langfuse-v4-blueviolet)](https://langfuse.com)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![Langfuse](https://img.shields.io/badge/Langfuse-v3-blueviolet)](https://langfuse.com)
 
 ---
 
@@ -24,34 +24,38 @@ Two interfaces are provided:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  app.py  (Streamlit UI)   /   trace_cli.py  (CLI)   │
-└───────────────────────┬─────────────────────────────┘
-                        │ calls
-                        ▼
-              ollama_client.py
-          ┌───────────────────────┐
-          │  chat_complete()      │  ──► langfuse.openai.OpenAI (wrapper)
-          │  chat_stream()        │  ──► propagate_attributes() [OTel ctx]
-          │  list_models()        │  ──► httpx → Ollama /api/tags
-          │  new_session_id()     │
-          └───────────────────────┘
-                        │
-                    config.py
-          (env vars via python-dotenv)
+┌──────────────────────────────────────────────────────────┐
+│  app.py (Streamlit UI: sidebar/chat_tab/batch_tab)       │
+│  trace_cli.py (CLI)                                      │
+└──────────────┬─────────────────────┬─────────────────────┘
+               │                     │
+               ▼                     ▼
+       batch_runner.py        ollama_client.py
+   (JSONL parsing, per-    ┌────────────────────────┐
+    entry overrides, run)  │  get_chat_client()     │ ──► cached langfuse.openai.OpenAI
+               │           │  chat_complete()       │ ──► _trace_root() span [OTel ctx]
+               └─────────► │  chat_stream()         │
+                           │  ping() / list_models()│ ──► httpx → Ollama API
+                           │  flush()               │
+                           └────────────────────────┘
+                                      │
+                                  config.py
+                        (env-var defaults via python-dotenv)
 ```
 
 **Key design decisions:**
 
-- **Lazy imports** — `langfuse.openai.OpenAI` and `propagate_attributes` are imported only when a real request is made, so the module can be imported safely in tests without side effects.
+- **Session-scoped config, no global mutation** — the sidebar builds an immutable `SidebarConfig` per rerun; neither `config.*` module globals nor `os.environ` are mutated, so concurrent Streamlit sessions can't leak credentials into each other. Langfuse credentials are registered by instantiating `Langfuse(...)` explicitly and each call is routed with the `langfuse_public_key` kwarg.
+- **Cached clients** — `get_chat_client()` caches one wrapped OpenAI client per (Ollama URL, Langfuse credentials) combination, preserving connection pooling across reruns and batch entries.
+- **Langfuse v3 trace attributes** — the OpenAI wrapper only extracts `name`, `metadata` and `langfuse_public_key` from `.create()`. `session_id`, `user_id` and `tags` are set with the v3 pattern: a root span via `start_as_current_span()` + `update_trace()` (see `_trace_root()`); the wrapper's generation nests under it.
 - **Dependency injection** — both `chat_complete` and `chat_stream` accept an optional `client` argument; tests pass a fake client instead of mocking the module.
-- **Langfuse v4 OTel context** — `session_id`, `user_id`, and `tags` are propagated via `propagate_attributes()` (OpenTelemetry context manager). Only `name` is passed directly to `.create()` as a Langfuse-specific kwarg.
+- **Shared batch domain logic** — `batch_runner.py` holds JSONL parsing and per-entry default merging, used by both the Streamlit batch tab and the CLI, and testable without Streamlit or network.
 
 ---
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.9+
 - [Ollama](https://ollama.com) running locally (`ollama serve`)
 - A [Langfuse](https://langfuse.com) account (Cloud or self-hosted)
 
@@ -114,7 +118,7 @@ Open `http://localhost:8501`. The sidebar lets you override credentials, switch 
 The UI has two tabs:
 
 - **💬 Chat** — interactive multi-turn conversation with streaming output.
-- **📋 Batch** — upload a JSONL file, preview parsed prompts, run them sequentially with a live progress bar, inspect each result in expandable cards, and download `results.jsonl`.
+- **📋 Batch** — upload a JSONL file, preview parsed prompts, run them sequentially with a live progress bar (cancellable mid-run, partial results are kept), inspect each result in expandable cards, and download `results.jsonl`.
 
 ### CLI — single prompt
 
@@ -184,17 +188,26 @@ Every request sends the following to Langfuse automatically:
 
 ```
 langfuse-ollama/
-├── app.py                    # Streamlit UI — chat tab + batch tab
+├── app.py                    # Streamlit entry point — layout, session state, tabs
+├── sidebar.py                # Sidebar controls → immutable SidebarConfig
+├── chat_tab.py               # Interactive chat tab (streaming + non-streaming)
+├── batch_tab.py              # JSONL batch tab (incremental, cancellable runs)
+├── batch_runner.py           # Batch domain logic shared by UI and CLI
 ├── trace_cli.py              # CLI tracer — single prompt or JSONL batch
-├── ollama_client.py          # Core client: chat_complete, chat_stream, list_models
-├── config.py                 # Env-var loader (python-dotenv)
-├── requirements.txt          # Python dependencies
+├── ollama_client.py          # Core client: cached clients, chat, ping, flush
+├── config.py                 # Env-var defaults (python-dotenv)
+├── feedback_widget.py        # Featurebase feedback widget (anonymous boot)
+├── styles.py                 # Custom CSS
+├── pyproject.toml            # Project metadata + pinned dependencies
+├── requirements.txt          # Python dependencies (mirror of pyproject)
 ├── .env.example              # Environment variable template
 ├── prompts.example.jsonl     # Sample batch file showing all supported keys
 └── tests/
     ├── test_config.py          # Unit tests for config module
     ├── test_ollama_client.py   # Unit tests for ollama_client (DI-based fakes)
-    └── test_trace_cli.py       # Unit tests for CLI argument parsing and dispatch
+    ├── test_batch_runner.py    # Unit tests for batch parsing/merging/running
+    ├── test_feedback_widget.py # Unit tests for the Featurebase boot snippet
+    └── test_trace_cli.py       # Unit tests for CLI wiring (real main(), mocked client)
 ```
 
 ---
@@ -236,11 +249,11 @@ Full guide: [langfuse.com/self-hosting/deployment/docker-compose](https://langfu
 
 | Package | Purpose |
 |---------|---------|
-| `langfuse>=2.0.0` | LLM observability SDK (provides `langfuse.openai.OpenAI` wrapper and `propagate_attributes`) |
-| `openai>=1.0.0` | OpenAI-compatible client (used by Langfuse wrapper) |
-| `streamlit>=1.35.0` | Web UI framework |
-| `python-dotenv>=1.0.0` | `.env` file loading |
-| `httpx>=0.27.0` | HTTP client for Ollama model listing |
+| `langfuse>=3.7,<4` | LLM observability SDK (provides the `langfuse.openai.OpenAI` wrapper) |
+| `openai>=1.0,<3` | OpenAI-compatible client (used by Langfuse wrapper) |
+| `streamlit>=1.45,<2` | Web UI framework |
+| `python-dotenv>=1.0,<2` | `.env` file loading |
+| `httpx>=0.27,<1` | HTTP client for Ollama health check and model listing |
 
 ---
 

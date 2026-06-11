@@ -148,45 +148,5 @@ class TestLangfuseConfigured(unittest.TestCase):
         self.assertTrue(cfg.langfuse_configured())
 
 
-class TestGetRequired(unittest.TestCase):
-    """Verifica get_required() — happy path y error."""
-
-    def setUp(self):
-        self._original = os.environ.pop("TEST_REQUIRED_VAR", None)
-
-    def tearDown(self):
-        if self._original is not None:
-            os.environ["TEST_REQUIRED_VAR"] = self._original
-        else:
-            os.environ.pop("TEST_REQUIRED_VAR", None)
-
-    def _reload_config(self):
-        import config
-        with patch("dotenv.load_dotenv"):
-            return importlib.reload(config)
-
-    def test_get_required_returns_value(self):
-        os.environ["TEST_REQUIRED_VAR"] = "some_value"
-        cfg = self._reload_config()
-        self.assertEqual(cfg.get_required("TEST_REQUIRED_VAR"), "some_value")
-
-    def test_get_required_strips_whitespace(self):
-        os.environ["TEST_REQUIRED_VAR"] = "  trimmed  "
-        cfg = self._reload_config()
-        self.assertEqual(cfg.get_required("TEST_REQUIRED_VAR"), "trimmed")
-
-    def test_get_required_raises_on_missing(self):
-        cfg = self._reload_config()
-        with self.assertRaises(EnvironmentError) as ctx:
-            cfg.get_required("TEST_REQUIRED_VAR")
-        self.assertIn("TEST_REQUIRED_VAR", str(ctx.exception))
-
-    def test_get_required_raises_on_empty(self):
-        os.environ["TEST_REQUIRED_VAR"] = "   "
-        cfg = self._reload_config()
-        with self.assertRaises(EnvironmentError):
-            cfg.get_required("TEST_REQUIRED_VAR")
-
-
 if __name__ == "__main__":
     unittest.main()
