@@ -4,12 +4,12 @@ Streamlit UI — multi-model, session-scoped, streaming chat with full Langfuse 
 """
 
 import streamlit as st
-import config
-import ollama_client as oc
-import styles
-import sidebar
-import chat_tab
-import batch_tab
+from langfuse_ollama import config
+from langfuse_ollama.core import ollama_client as oc
+from langfuse_ollama.ui import styles
+from langfuse_ollama.ui import sidebar
+from langfuse_ollama.ui import chat_tab
+from langfuse_ollama.ui import batch_tab
 
 st.set_page_config(
     page_title="Langfuse × Ollama",
@@ -51,7 +51,7 @@ with col_feedback:
 
 # ── Show Feedback or Main App ──────────────────────────────────────────────
 if st.session_state.show_feedback:
-    import feedback_widget
+    from langfuse_ollama.ui import feedback_widget
     feedback_widget.render_feedback(disabled=config.FEEDBACK_DISABLED)
     st.stop()
 

@@ -8,7 +8,7 @@ el usuario manualmente cargando la app — no la mockeamos.
 """
 
 import unittest
-import feedback_widget
+from langfuse_ollama.ui import feedback_widget
 
 
 class TestBootSnippet(unittest.TestCase):

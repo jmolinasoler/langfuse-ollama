@@ -17,9 +17,9 @@ import argparse
 import json
 import sys
 
-import config
-import batch_runner as br
-import ollama_client as oc
+from langfuse_ollama import config
+from langfuse_ollama.core import batch_runner as br
+from langfuse_ollama.core import ollama_client as oc
 
 
 def _streaming_chat(**kwargs):

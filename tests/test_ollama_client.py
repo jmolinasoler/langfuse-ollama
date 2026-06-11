@@ -15,7 +15,7 @@ class TestNewSessionId(unittest.TestCase):
     """new_session_id() debe retornar UUIDs válidos y únicos."""
 
     def setUp(self):
-        import ollama_client as oc
+        from langfuse_ollama.core import ollama_client as oc
         self.oc = oc
 
     def test_returns_valid_uuid(self):
@@ -35,29 +35,29 @@ class TestPing(unittest.TestCase):
     """ping() distingue Ollama disponible de no disponible."""
 
     def setUp(self):
-        import ollama_client as oc
+        from langfuse_ollama.core import ollama_client as oc
         self.oc = importlib.reload(oc)
 
-    @patch("ollama_client.httpx.get")
+    @patch("langfuse_ollama.core.ollama_client.httpx.get")
     def test_true_on_success(self, mock_get):
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
         mock_get.return_value = mock_response
         self.assertTrue(self.oc.ping())
 
-    @patch("ollama_client.httpx.get")
+    @patch("langfuse_ollama.core.ollama_client.httpx.get")
     def test_false_on_connection_error(self, mock_get):
         mock_get.side_effect = ConnectionError("refused")
         self.assertFalse(self.oc.ping())
 
-    @patch("ollama_client.httpx.get")
+    @patch("langfuse_ollama.core.ollama_client.httpx.get")
     def test_false_on_http_error(self, mock_get):
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = Exception("500")
         mock_get.return_value = mock_response
         self.assertFalse(self.oc.ping())
 
-    @patch("ollama_client.httpx.get")
+    @patch("langfuse_ollama.core.ollama_client.httpx.get")
     def test_uses_given_base_url(self, mock_get):
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
@@ -70,10 +70,10 @@ class TestListModels(unittest.TestCase):
     """list_models() con httpx mockeado. Sin fallback que enmascare fallos."""
 
     def setUp(self):
-        import ollama_client as oc
+        from langfuse_ollama.core import ollama_client as oc
         self.oc = importlib.reload(oc)
 
-    @patch("ollama_client.httpx.get")
+    @patch("langfuse_ollama.core.ollama_client.httpx.get")
     def test_returns_model_names_on_success(self, mock_get):
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -89,19 +89,19 @@ class TestListModels(unittest.TestCase):
         models = self.oc.list_models()
         self.assertEqual(models, ["llama3.1", "mistral", "codellama"])
 
-    @patch("ollama_client.httpx.get")
+    @patch("langfuse_ollama.core.ollama_client.httpx.get")
     def test_returns_empty_on_connection_error(self, mock_get):
         mock_get.side_effect = ConnectionError("refused")
         self.assertEqual(self.oc.list_models(), [])
 
-    @patch("ollama_client.httpx.get")
+    @patch("langfuse_ollama.core.ollama_client.httpx.get")
     def test_returns_empty_on_http_error(self, mock_get):
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = Exception("500")
         mock_get.return_value = mock_response
         self.assertEqual(self.oc.list_models(), [])
 
-    @patch("ollama_client.httpx.get")
+    @patch("langfuse_ollama.core.ollama_client.httpx.get")
     def test_handles_empty_models_list(self, mock_get):
         mock_response = MagicMock()
         mock_response.json.return_value = {"models": []}
@@ -109,7 +109,7 @@ class TestListModels(unittest.TestCase):
         mock_get.return_value = mock_response
         self.assertEqual(self.oc.list_models(), [])
 
-    @patch("ollama_client.httpx.get")
+    @patch("langfuse_ollama.core.ollama_client.httpx.get")
     def test_handles_missing_models_key(self, mock_get):
         mock_response = MagicMock()
         mock_response.json.return_value = {}
@@ -122,7 +122,7 @@ class TestGetChatClient(unittest.TestCase):
     """get_chat_client() cachea por configuración."""
 
     def setUp(self):
-        import ollama_client as oc
+        from langfuse_ollama.core import ollama_client as oc
         self.oc = importlib.reload(oc)
 
     def test_same_config_returns_same_client(self):
@@ -143,7 +143,7 @@ class TestTraceRoot(unittest.TestCase):
     """_trace_root() fija los atributos de trace vía span raíz (patrón v3)."""
 
     def setUp(self):
-        import ollama_client as oc
+        from langfuse_ollama.core import ollama_client as oc
         self.oc = importlib.reload(oc)
 
     def test_noop_without_public_key(self):
@@ -212,7 +212,7 @@ class TestChatComplete(unittest.TestCase):
     """chat_complete() con client inyectado (DI)."""
 
     def setUp(self):
-        import ollama_client as oc
+        from langfuse_ollama.core import ollama_client as oc
         self.oc = importlib.reload(oc)
 
     def test_returns_response_content(self):
@@ -311,7 +311,7 @@ class TestChatStream(unittest.TestCase):
     """chat_stream() con client inyectado (DI)."""
 
     def setUp(self):
-        import ollama_client as oc
+        from langfuse_ollama.core import ollama_client as oc
         self.oc = importlib.reload(oc)
 
     def test_yields_all_chunks(self):

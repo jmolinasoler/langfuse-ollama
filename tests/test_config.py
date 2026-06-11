@@ -31,7 +31,7 @@ class TestConfigDefaults(unittest.TestCase):
                 os.environ.pop(key, None)
 
     def _reload_config(self):
-        import config
+        from langfuse_ollama import config
         with patch("dotenv.load_dotenv"):
             return importlib.reload(config)
 
@@ -90,7 +90,7 @@ class TestConfigFromEnv(unittest.TestCase):
                 os.environ.pop(key, None)
 
     def _reload_config(self):
-        import config
+        from langfuse_ollama import config
         with patch("dotenv.load_dotenv"):
             return importlib.reload(config)
 
@@ -125,7 +125,7 @@ class TestLangfuseConfigured(unittest.TestCase):
             os.environ["LANGFUSE_SECRET_KEY"] = self._original_sk
 
     def _reload_config(self):
-        import config
+        from langfuse_ollama import config
         with patch("dotenv.load_dotenv"):
             return importlib.reload(config)
 

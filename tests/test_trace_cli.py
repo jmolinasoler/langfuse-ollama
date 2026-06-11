@@ -18,11 +18,11 @@ import importlib
 def _run_cli(argv, stream_chunks=None, complete_response="ok"):
     """Ejecuta trace_cli.main() con mocks. Retorna (stdout, mocks)."""
     mocks = {}
-    with patch("ollama_client.get_chat_client", return_value=MagicMock()) as m_client, \
-         patch("ollama_client.chat_stream") as m_stream, \
-         patch("ollama_client.chat_complete") as m_complete, \
-         patch("ollama_client.flush") as m_flush, \
-         patch("ollama_client.new_session_id", return_value="fake-session-id"), \
+    with patch("langfuse_ollama.core.ollama_client.get_chat_client", return_value=MagicMock()) as m_client, \
+         patch("langfuse_ollama.core.ollama_client.chat_stream") as m_stream, \
+         patch("langfuse_ollama.core.ollama_client.chat_complete") as m_complete, \
+         patch("langfuse_ollama.core.ollama_client.flush") as m_flush, \
+         patch("langfuse_ollama.core.ollama_client.new_session_id", return_value="fake-session-id"), \
          patch("sys.argv", ["trace_cli.py"] + argv):
         m_stream.side_effect = lambda **kw: iter(stream_chunks or ["Hello", " ", "World"])
         m_complete.return_value = complete_response
@@ -39,7 +39,7 @@ def _run_cli(argv, stream_chunks=None, complete_response="ok"):
 class TestCliSingleStream(unittest.TestCase):
 
     def test_stream_mode_calls_chat_stream(self):
-        import config
+        from langfuse_ollama import config
         _, mocks = _run_cli(["--prompt", "Test prompt"])
         mocks["stream"].assert_called_once()
         kwargs = mocks["stream"].call_args.kwargs

@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass, replace
 from typing import List, Optional, Tuple
 
-import ollama_client as oc
+from langfuse_ollama.core import ollama_client as oc
 
 OVERRIDE_KEYS = ("model", "system", "user_id", "trace_name", "temperature", "max_tokens")
 

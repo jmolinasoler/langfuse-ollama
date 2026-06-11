@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from typing import List
 
 import streamlit as st
-import config
-import ollama_client as oc
+from langfuse_ollama import config
+from langfuse_ollama.core import ollama_client as oc
 
 LANGFUSE_REGIONS = [
     "https://cloud.langfuse.com",

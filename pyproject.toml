@@ -13,15 +13,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = [
-    "app",
-    "batch_runner",
-    "batch_tab",
-    "chat_tab",
-    "config",
-    "feedback_widget",
-    "ollama_client",
-    "sidebar",
-    "styles",
-    "trace_cli",
-]
+py-modules = ["app", "trace_cli"]
+
+[tool.setuptools.packages.find]
+include = ["langfuse_ollama*"]

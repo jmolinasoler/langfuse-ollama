@@ -2,8 +2,8 @@ import html as _html
 from typing import Optional
 
 import streamlit as st
-import ollama_client as oc
-from sidebar import SidebarConfig
+from langfuse_ollama.core import ollama_client as oc
+from langfuse_ollama.ui.sidebar import SidebarConfig
 
 
 def render(cfg: SidebarConfig) -> None:

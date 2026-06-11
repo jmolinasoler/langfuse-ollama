@@ -5,7 +5,7 @@ Ejecutar: python3 -m unittest tests.test_batch_runner -v
 
 import unittest
 
-import batch_runner as br
+from langfuse_ollama.core import batch_runner as br
 
 
 DEFAULTS = br.BatchDefaults(

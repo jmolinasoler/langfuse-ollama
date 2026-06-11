@@ -18,7 +18,7 @@ from typing import Generator, Optional
 
 import httpx
 
-import config
+from langfuse_ollama import config
 
 logger = logging.getLogger(__name__)
 

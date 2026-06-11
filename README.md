@@ -188,26 +188,29 @@ Every request sends the following to Langfuse automatically:
 
 ```
 langfuse-ollama/
-├── app.py                    # Streamlit entry point — layout, session state, tabs
-├── sidebar.py                # Sidebar controls → immutable SidebarConfig
-├── chat_tab.py               # Interactive chat tab (streaming + non-streaming)
-├── batch_tab.py              # JSONL batch tab (incremental, cancellable runs)
-├── batch_runner.py           # Batch domain logic shared by UI and CLI
-├── trace_cli.py              # CLI tracer — single prompt or JSONL batch
-├── ollama_client.py          # Core client: cached clients, chat, ping, flush
-├── config.py                 # Env-var defaults (python-dotenv)
-├── feedback_widget.py        # Featurebase feedback widget (anonymous boot)
-├── styles.py                 # Custom CSS
-├── pyproject.toml            # Project metadata + pinned dependencies
-├── requirements.txt          # Python dependencies (mirror of pyproject)
-├── .env.example              # Environment variable template
-├── prompts.example.jsonl     # Sample batch file showing all supported keys
+├── app.py                        # Streamlit entry point — layout, session state, tabs
+├── trace_cli.py                  # CLI entry point — single prompt or JSONL batch
+├── langfuse_ollama/              # Application package
+│   ├── config.py                 # Env-var defaults (python-dotenv)
+│   ├── core/                     # Domain logic — no Streamlit dependency
+│   │   ├── ollama_client.py      # Cached clients, chat, ping, flush
+│   │   └── batch_runner.py       # Batch parsing/merging/run, shared by UI and CLI
+│   └── ui/                       # Streamlit components
+│       ├── sidebar.py            # Sidebar controls → immutable SidebarConfig
+│       ├── chat_tab.py           # Interactive chat tab (streaming + non-streaming)
+│       ├── batch_tab.py          # JSONL batch tab (incremental, cancellable runs)
+│       ├── feedback_widget.py    # Featurebase feedback widget (anonymous boot)
+│       └── styles.py             # Custom CSS
+├── pyproject.toml                # Project metadata + pinned dependencies
+├── requirements.txt              # Python dependencies (mirror of pyproject)
+├── .env.example                  # Environment variable template
+├── prompts.example.jsonl         # Sample batch file showing all supported keys
 └── tests/
-    ├── test_config.py          # Unit tests for config module
-    ├── test_ollama_client.py   # Unit tests for ollama_client (DI-based fakes)
-    ├── test_batch_runner.py    # Unit tests for batch parsing/merging/running
-    ├── test_feedback_widget.py # Unit tests for the Featurebase boot snippet
-    └── test_trace_cli.py       # Unit tests for CLI wiring (real main(), mocked client)
+    ├── test_config.py            # Unit tests for config module
+    ├── test_ollama_client.py     # Unit tests for ollama_client (DI-based fakes)
+    ├── test_batch_runner.py      # Unit tests for batch parsing/merging/running
+    ├── test_feedback_widget.py   # Unit tests for the Featurebase boot snippet
+    └── test_trace_cli.py         # Unit tests for CLI wiring (real main(), mocked client)
 ```
 
 ---
