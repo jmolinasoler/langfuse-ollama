@@ -20,6 +20,17 @@ st.set_page_config(
 
 styles.inject()
 
+# Hide Streamlit deploy button
+st.markdown(
+    r"""
+    <style>
+    .stDeployButton {
+        visibility: hidden;
+    }
+    </style>
+    """, unsafe_allow_html=True
+)
+
 # ── Session State Init ─────────────────────────────────────────────────────────
 if "session_id"         not in st.session_state: st.session_state.session_id         = new_session_id()
 if "messages"           not in st.session_state: st.session_state.messages           = []

@@ -1,0 +1,5 @@
+[browser]
+hideDeployButton = true
+
+[server]
+hideStreamlitDeployButton = true

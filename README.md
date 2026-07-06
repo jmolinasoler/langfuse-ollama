@@ -76,6 +76,17 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### Quick Start with Makefile
+
+Alternatively, use the provided Makefile for a streamlined workflow:
+
+```bash
+make install    # Create virtualenv and install dependencies
+source .venv/bin/activate  # Load virtualenv (or: eval $(make load))
+make run        # Start the Streamlit app
+make clean      # Remove virtualenv and build artifacts
+```
+
 ---
 
 ## Configuration
