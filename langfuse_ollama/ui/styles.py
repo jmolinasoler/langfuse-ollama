@@ -158,9 +158,15 @@ section[data-testid="stSidebar"] {
 }
 
 /* Hide Streamlit default elements for minimal toolbar */
-#MainMenu, footer, header { visibility: hidden; }
-/* Restore sidebar collapse/expand button (stSidebarCollapseButton in Streamlit 1.50) */
+#MainMenu, footer { visibility: hidden; }
+/* Keep header visible - Streamlit 1.50+ manages sidebar toggle button natively */
+header { visibility: visible !important; }
+/* Ensure sidebar collapse button and its icon are always visible */
 [data-testid="stSidebarCollapseButton"] {
+    visibility: visible !important;
+    display: flex !important;
+}
+[data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"] {
     visibility: visible !important;
 }
 .block-container { padding-top: 1.5rem !important; }

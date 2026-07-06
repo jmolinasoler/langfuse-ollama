@@ -1,14 +1,15 @@
 """
-Tests para batch_runner.py — lógica de dominio pura, sin Streamlit ni red.
-Ejecutar: python3 -m unittest tests.test_batch_runner -v
+Tests para use_cases/batch.py — lógica de aplicación pura, sin Streamlit ni red.
+Ejecutar: python3 -m unittest tests.test_use_cases_batch -v
 """
 
 import unittest
 
-from langfuse_ollama.core import batch_runner as br
+from langfuse_ollama.domain.entities import BatchDefaults
+from langfuse_ollama.use_cases import batch as br
 
 
-DEFAULTS = br.BatchDefaults(
+DEFAULTS = BatchDefaults(
     model="llama3.1",
     system="You are a helpful assistant.",
     user_id="u1",
@@ -17,6 +18,28 @@ DEFAULTS = br.BatchDefaults(
     temperature=0.7,
     max_tokens=2048,
 )
+
+
+class FakeGateway:
+    """ChatGateway de prueba — registra las requests recibidas."""
+
+    def __init__(self, response="ok", chunks=None, error=None):
+        self._response = response
+        self._chunks = chunks if chunks is not None else ["ok"]
+        self._error = error
+        self.requests = []
+
+    def complete(self, request):
+        self.requests.append(request)
+        if self._error:
+            raise self._error
+        return self._response
+
+    def stream(self, request):
+        self.requests.append(request)
+        if self._error:
+            raise self._error
+        return iter(self._chunks)
 
 
 class TestParseJsonl(unittest.TestCase):
@@ -94,50 +117,50 @@ class TestResolveParams(unittest.TestCase):
 class TestRunEntry(unittest.TestCase):
 
     def test_success_result(self):
-        captured = {}
+        gateway = FakeGateway(response="the response")
 
-        def fake_chat(**kwargs):
-            captured.update(kwargs)
-            return "the response"
-
-        result = br.run_entry(3, {"prompt": "hello"}, DEFAULTS, chat_fn=fake_chat)
+        result = br.run_entry(gateway, 3, {"prompt": "hello"}, DEFAULTS)
 
         self.assertEqual(result["line"], 3)
         self.assertEqual(result["prompt"], "hello")
         self.assertEqual(result["response"], "the response")
         self.assertIsNone(result["error"])
-        self.assertEqual(captured["messages"][0],
-                         {"role": "system", "content": DEFAULTS.system})
-        self.assertEqual(captured["messages"][1],
-                         {"role": "user", "content": "hello"})
-        self.assertEqual(captured["session_id"], result["session_id"])
 
-    def test_entry_overrides_reach_chat(self):
-        captured = {}
+        request = gateway.requests[0]
+        self.assertEqual(request.messages[0].role, "system")
+        self.assertEqual(request.messages[0].content, DEFAULTS.system)
+        self.assertEqual(request.messages[1].role, "user")
+        self.assertEqual(request.messages[1].content, "hello")
+        self.assertEqual(request.session_id, result["session_id"])
 
-        def fake_chat(**kwargs):
-            captured.update(kwargs)
-            return "ok"
+    def test_entry_overrides_reach_gateway(self):
+        gateway = FakeGateway()
+        br.run_entry(gateway, 1,
+                     {"prompt": "p", "model": "mistral", "system": "Be brief."},
+                     DEFAULTS)
+        request = gateway.requests[0]
+        self.assertEqual(request.model, "mistral")
+        self.assertEqual(request.messages[0].content, "Be brief.")
 
-        br.run_entry(1, {"prompt": "p", "model": "mistral", "system": "Be brief."},
-                     DEFAULTS, chat_fn=fake_chat)
-        self.assertEqual(captured["model"], "mistral")
-        self.assertEqual(captured["messages"][0]["content"], "Be brief.")
+    def test_streaming_with_on_chunk(self):
+        gateway = FakeGateway(chunks=["Hel", "lo"])
+        seen = []
+        result = br.run_entry(gateway, 1, {"prompt": "p"}, DEFAULTS,
+                              on_chunk=seen.append)
+        self.assertEqual(seen, ["Hel", "lo"])
+        self.assertEqual(result["response"], "Hello")
+        self.assertIsNone(result["error"])
 
     def test_error_captured(self):
-        def fake_chat(**kwargs):
-            raise RuntimeError("boom")
-
-        result = br.run_entry(1, {"prompt": "p"}, DEFAULTS, chat_fn=fake_chat)
+        gateway = FakeGateway(error=RuntimeError("boom"))
+        result = br.run_entry(gateway, 1, {"prompt": "p"}, DEFAULTS)
         self.assertIsNone(result["response"])
         self.assertEqual(result["error"], "boom")
 
     def test_each_run_gets_fresh_session(self):
-        def fake_chat(**kwargs):
-            return "ok"
-
-        r1 = br.run_entry(1, {"prompt": "p"}, DEFAULTS, chat_fn=fake_chat)
-        r2 = br.run_entry(1, {"prompt": "p"}, DEFAULTS, chat_fn=fake_chat)
+        gateway = FakeGateway()
+        r1 = br.run_entry(gateway, 1, {"prompt": "p"}, DEFAULTS)
+        r2 = br.run_entry(gateway, 1, {"prompt": "p"}, DEFAULTS)
         self.assertNotEqual(r1["session_id"], r2["session_id"])
 
 

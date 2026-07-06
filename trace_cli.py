@@ -18,28 +18,23 @@ import json
 import sys
 
 from langfuse_ollama import config
-from langfuse_ollama.core import batch_runner as br
-from langfuse_ollama.core import ollama_client as oc
+from langfuse_ollama.adapters import langfuse_ollama as gateway_adapter
+from langfuse_ollama.domain.entities import BatchDefaults
+from langfuse_ollama.use_cases import batch as batch_uc
 
 
-def _streaming_chat(**kwargs):
-    """chat_fn para batch_runner: imprime chunks a stdout y retorna el texto completo."""
-    chunks = []
-    for chunk in oc.chat_stream(**kwargs):
-        print(chunk, end="", flush=True)
-        chunks.append(chunk)
-    print()
-    return "".join(chunks)
+def _print_chunk(chunk: str) -> None:
+    print(chunk, end="", flush=True)
 
 
-def _run_entry(args, line_num, entry, defaults, client):
+def _run_entry(args, gateway, line_num, entry, defaults):
     print(f"\n[{entry.get('model', defaults.model)}]\n{'─'*60}")
-    result = br.run_entry(
-        line_num, entry, defaults,
-        client=client,
-        lf_public_key=config.LANGFUSE_PUBLIC_KEY or None,
-        chat_fn=_streaming_chat if args.stream else None,
+    result = batch_uc.run_entry(
+        gateway, line_num, entry, defaults,
+        on_chunk=_print_chunk if args.stream else None,
     )
+    if args.stream:
+        print()
     if result["error"]:
         print(f"Error: {result['error']}", file=sys.stderr)
     elif not args.stream:
@@ -67,16 +62,17 @@ def main():
     parser.add_argument("--max-tokens",  type=int,   default=2048)
     args = parser.parse_args()
 
-    defaults = br.BatchDefaults(
+    defaults = BatchDefaults(
         model=args.model,
         system=args.system,
         user_id=args.user_id,
         trace_name=args.trace_name,
-        tags=br.normalize_tags(args.tags, ["cli", "ollama"]),
+        tags=batch_uc.normalize_tags(args.tags, ["cli", "ollama"]),
         temperature=args.temperature,
         max_tokens=args.max_tokens,
     )
-    client = oc.get_chat_client(
+    # Composition root del CLI: la config de entorno solo se resuelve aquí.
+    gateway = gateway_adapter.get_gateway(
         ollama_url=config.OLLAMA_BASE_URL,
         lf_public_key=config.LANGFUSE_PUBLIC_KEY,
         lf_secret_key=config.LANGFUSE_SECRET_KEY,
@@ -85,7 +81,7 @@ def main():
 
     # ── Single mode ──────────────────────────────────────────────────────────
     if args.prompt:
-        _run_entry(args, 1, {"prompt": args.prompt}, defaults, client)
+        _run_entry(args, gateway, 1, {"prompt": args.prompt}, defaults)
         _finish()
         return
 
@@ -97,7 +93,7 @@ def main():
         print(f"Error: file not found: {args.batch_file}", file=sys.stderr)
         sys.exit(1)
 
-    entries, parse_errors = br.parse_jsonl(text)
+    entries, parse_errors = batch_uc.parse_jsonl(text)
     total = len(entries)
     print(f"[batch] {total} prompt(s) — default model: {args.model}")
 
@@ -112,7 +108,7 @@ def main():
 
         for i, (line_num, entry) in enumerate(entries, 1):
             print(f"\n[batch {i}/{total}]", end="")
-            result = _run_entry(args, line_num, entry, defaults, client)
+            result = _run_entry(args, gateway, line_num, entry, defaults)
             if out_fh:
                 out_fh.write(json.dumps(result, ensure_ascii=False) + "\n")
                 out_fh.flush()
@@ -128,7 +124,7 @@ def main():
 def _finish():
     """Garantiza que los traces bufferizados salen antes de terminar el proceso."""
     if config.langfuse_configured():
-        oc.flush(config.LANGFUSE_PUBLIC_KEY)
+        gateway_adapter.flush(config.LANGFUSE_PUBLIC_KEY)
         print("[traces flushed → Langfuse]")
 
 

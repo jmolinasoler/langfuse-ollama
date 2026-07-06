@@ -3,7 +3,8 @@ from typing import List
 
 import streamlit as st
 from langfuse_ollama import config
-from langfuse_ollama.core import ollama_client as oc
+from langfuse_ollama.adapters.ollama_api import OllamaApi
+from langfuse_ollama.domain.entities import new_session_id
 
 LANGFUSE_REGIONS = [
     "https://cloud.langfuse.com",
@@ -32,8 +33,9 @@ class SidebarConfig:
 
 
 def _refresh_ollama(ollama_url: str) -> None:
-    st.session_state.ollama_status = oc.ping(ollama_url)
-    st.session_state.models = oc.list_models(ollama_url) if st.session_state.ollama_status else []
+    catalog = OllamaApi(ollama_url)
+    st.session_state.ollama_status = catalog.ping()
+    st.session_state.models = catalog.list_models() if st.session_state.ollama_status else []
     st.session_state.ollama_checked_url = ollama_url
 
 
@@ -116,7 +118,7 @@ def render() -> SidebarConfig:
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🔁 New Session"):
-                st.session_state.session_id = oc.new_session_id()
+                st.session_state.session_id = new_session_id()
                 st.session_state.messages   = []
                 st.rerun()
         with col2:

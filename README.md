@@ -23,33 +23,36 @@ Two interfaces are provided:
 
 ## Architecture
 
+The codebase follows [Clean Architecture](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html): source-code dependencies only point inward, and the inner rings know nothing about Streamlit, httpx, OpenAI or Langfuse.
+
 ```
-┌──────────────────────────────────────────────────────────┐
-│  app.py (Streamlit UI: sidebar/chat_tab/batch_tab)       │
-│  trace_cli.py (CLI)                                      │
-└──────────────┬─────────────────────┬─────────────────────┘
-               │                     │
-               ▼                     ▼
-       batch_runner.py        ollama_client.py
-   (JSONL parsing, per-    ┌────────────────────────┐
-    entry overrides, run)  │  get_chat_client()     │ ──► cached langfuse.openai.OpenAI
-               │           │  chat_complete()       │ ──► _trace_root() span [OTel ctx]
-               └─────────► │  chat_stream()         │
-                           │  ping() / list_models()│ ──► httpx → Ollama API
-                           │  flush()               │
-                           └────────────────────────┘
-                                      │
-                                  config.py
-                        (env-var defaults via python-dotenv)
+┌─────────────────────────────────────────────────────────────────────┐
+│  Frameworks & Drivers                                               │
+│  app.py + langfuse_ollama/ui/* (Streamlit) · trace_cli.py (CLI)     │
+│  config.py (env defaults) — composition roots build the adapters    │
+├─────────────────────────────────────────────────────────────────────┤
+│  Interface Adapters            langfuse_ollama/adapters/            │
+│  LangfuseOllamaGateway  ──►  langfuse.openai wrapper + root span    │
+│  OllamaApi              ──►  httpx → Ollama REST API                │
+├─────────────────────────────────────────────────────────────────────┤
+│  Use Cases                     langfuse_ollama/use_cases/           │
+│  chat.make_chat_request / complete_turn / stream_turn               │
+│  batch.parse_jsonl / resolve_params / run_entry                     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Entities + Ports              langfuse_ollama/domain/              │
+│  ChatMessage · ChatRequest · BatchDefaults · new_session_id         │
+│  ChatGateway · ModelCatalog  (typing.Protocol boundaries)           │
+└─────────────────────────────────────────────────────────────────────┘
+        dependencies point downward (inward) only — the Dependency Rule
 ```
 
 **Key design decisions:**
 
+- **The Dependency Rule** — `domain/` is stdlib-only; `use_cases/` imports only the domain; `adapters/` implement the domain ports (`ChatGateway`, `ModelCatalog`) with the real SDKs; the UI and CLI are composition roots that wire adapters into use cases. Use cases are tested with an in-memory `FakeGateway`, no mocking of SDK modules.
 - **Session-scoped config, no global mutation** — the sidebar builds an immutable `SidebarConfig` per rerun; neither `config.*` module globals nor `os.environ` are mutated, so concurrent Streamlit sessions can't leak credentials into each other. Langfuse credentials are registered by instantiating `Langfuse(...)` explicitly and each call is routed with the `langfuse_public_key` kwarg.
-- **Cached clients** — `get_chat_client()` caches one wrapped OpenAI client per (Ollama URL, Langfuse credentials) combination, preserving connection pooling across reruns and batch entries.
-- **Langfuse v3 trace attributes** — the OpenAI wrapper only extracts `name`, `metadata` and `langfuse_public_key` from `.create()`. `session_id`, `user_id` and `tags` are set with the v3 pattern: a root span via `start_as_current_span()` + `update_trace()` (see `_trace_root()`); the wrapper's generation nests under it.
-- **Dependency injection** — both `chat_complete` and `chat_stream` accept an optional `client` argument; tests pass a fake client instead of mocking the module.
-- **Shared batch domain logic** — `batch_runner.py` holds JSONL parsing and per-entry default merging, used by both the Streamlit batch tab and the CLI, and testable without Streamlit or network.
+- **Cached gateways** — `adapters.langfuse_ollama.get_gateway()` caches one gateway per (Ollama URL, Langfuse credentials) combination, preserving connection pooling across reruns and batch entries.
+- **Langfuse v3 trace attributes** — the OpenAI wrapper only extracts `name`, `metadata` and `langfuse_public_key` from `.create()`. `session_id`, `user_id` and `tags` are set with the v3 pattern: a root span via `start_as_current_span()` + `update_trace()` (see `LangfuseOllamaGateway._trace_root()`); the wrapper's generation nests under it.
+- **Shared batch use case** — `use_cases/batch.py` holds JSONL parsing and per-entry default merging, used by both the Streamlit batch tab and the CLI; the CLI streams by passing an `on_chunk` callback.
 
 ---
 
@@ -188,14 +191,20 @@ Every request sends the following to Langfuse automatically:
 
 ```
 langfuse-ollama/
-├── app.py                        # Streamlit entry point — layout, session state, tabs
-├── trace_cli.py                  # CLI entry point — single prompt or JSONL batch
-├── langfuse_ollama/              # Application package
+├── app.py                        # Entry point: Streamlit — layout, session state, tabs
+├── trace_cli.py                  # Entry point: CLI — single prompt or JSONL batch
+├── langfuse_ollama/              # Application package (Clean Architecture rings)
 │   ├── config.py                 # Env-var defaults (python-dotenv)
-│   ├── core/                     # Domain logic — no Streamlit dependency
-│   │   ├── ollama_client.py      # Cached clients, chat, ping, flush
-│   │   └── batch_runner.py       # Batch parsing/merging/run, shared by UI and CLI
-│   └── ui/                       # Streamlit components
+│   ├── domain/                   # Entities + ports — stdlib only
+│   │   ├── entities.py           # ChatMessage, ChatRequest, BatchDefaults, new_session_id
+│   │   └── ports.py              # ChatGateway, ModelCatalog (typing.Protocol)
+│   ├── use_cases/                # Application rules — depend on domain only
+│   │   ├── chat.py               # make_chat_request, complete_turn, stream_turn
+│   │   └── batch.py              # parse_jsonl, resolve_params, run_entry
+│   ├── adapters/                 # Port implementations over real SDKs
+│   │   ├── langfuse_ollama.py    # LangfuseOllamaGateway + cache + flush
+│   │   └── ollama_api.py         # OllamaApi: ping, list_models (httpx)
+│   └── ui/                       # Frameworks & drivers (Streamlit)
 │       ├── sidebar.py            # Sidebar controls → immutable SidebarConfig
 │       ├── chat_tab.py           # Interactive chat tab (streaming + non-streaming)
 │       ├── batch_tab.py          # JSONL batch tab (incremental, cancellable runs)
@@ -206,11 +215,13 @@ langfuse-ollama/
 ├── .env.example                  # Environment variable template
 ├── prompts.example.jsonl         # Sample batch file showing all supported keys
 └── tests/
-    ├── test_config.py            # Unit tests for config module
-    ├── test_ollama_client.py     # Unit tests for ollama_client (DI-based fakes)
-    ├── test_batch_runner.py      # Unit tests for batch parsing/merging/running
-    ├── test_feedback_widget.py   # Unit tests for the Featurebase boot snippet
-    └── test_trace_cli.py         # Unit tests for CLI wiring (real main(), mocked client)
+    ├── test_domain.py            # Entities (session ids)
+    ├── test_use_cases_chat.py    # ChatRequest construction
+    ├── test_use_cases_batch.py   # Batch parsing/merging/running (FakeGateway)
+    ├── test_adapters.py          # OllamaApi + LangfuseOllamaGateway (DI fakes)
+    ├── test_config.py            # Env-var defaults
+    ├── test_feedback_widget.py   # Featurebase boot snippet
+    └── test_trace_cli.py         # CLI wiring (real main(), FakeGateway)
 ```
 
 ---

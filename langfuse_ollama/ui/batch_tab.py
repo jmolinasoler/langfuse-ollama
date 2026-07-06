@@ -1,8 +1,9 @@
 import json
 
 import streamlit as st
-from langfuse_ollama.core import batch_runner as br
-from langfuse_ollama.core import ollama_client as oc
+from langfuse_ollama.adapters.langfuse_ollama import get_gateway
+from langfuse_ollama.domain.entities import BatchDefaults
+from langfuse_ollama.use_cases import batch as batch_uc
 from langfuse_ollama.ui.sidebar import SidebarConfig
 
 
@@ -52,7 +53,7 @@ def _parse_if_new(uploaded) -> None:
     key = _file_key(uploaded)
     if st.session_state.get("batch_file_key") == key:
         return
-    entries, errors = br.parse_jsonl(uploaded.read().decode("utf-8"))
+    entries, errors = batch_uc.parse_jsonl(uploaded.read().decode("utf-8"))
     st.session_state.batch_file_key     = key
     st.session_state.batch_entries      = entries
     st.session_state.batch_parse_errors = errors
@@ -106,7 +107,7 @@ def _run_step(cfg: SidebarConfig) -> None:
     short = entry["prompt"][:70] + ("…" if len(entry["prompt"]) > 70 else "")
     st.progress(pos / total, text=f"{pos + 1}/{total}: {short}")
 
-    defaults = br.BatchDefaults(
+    defaults = BatchDefaults(
         model=cfg.model,
         system=cfg.system_prompt,
         user_id=cfg.user_id,
@@ -115,15 +116,14 @@ def _run_step(cfg: SidebarConfig) -> None:
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
     )
-    client = oc.get_chat_client(
+    gateway = get_gateway(
         ollama_url=cfg.ollama_url,
         lf_public_key=cfg.lf_public_key,
         lf_secret_key=cfg.lf_secret_key,
         lf_host=cfg.lf_url,
     )
 
-    result = br.run_entry(line_num, entry, defaults,
-                          client=client, lf_public_key=cfg.lf_public_key)
+    result = batch_uc.run_entry(gateway, line_num, entry, defaults)
     st.session_state.batch_results.append(result)
     st.session_state.batch_pos = pos + 1
     st.rerun()

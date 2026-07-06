@@ -5,7 +5,7 @@ Streamlit UI — multi-model, session-scoped, streaming chat with full Langfuse 
 
 import streamlit as st
 from langfuse_ollama import config
-from langfuse_ollama.core import ollama_client as oc
+from langfuse_ollama.domain.entities import new_session_id
 from langfuse_ollama.ui import styles
 from langfuse_ollama.ui import sidebar
 from langfuse_ollama.ui import chat_tab
@@ -21,7 +21,7 @@ st.set_page_config(
 styles.inject()
 
 # ── Session State Init ─────────────────────────────────────────────────────────
-if "session_id"         not in st.session_state: st.session_state.session_id         = oc.new_session_id()
+if "session_id"         not in st.session_state: st.session_state.session_id         = new_session_id()
 if "messages"           not in st.session_state: st.session_state.messages           = []
 if "models"             not in st.session_state: st.session_state.models             = []
 if "ollama_status"      not in st.session_state: st.session_state.ollama_status      = None

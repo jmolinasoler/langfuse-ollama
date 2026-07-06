@@ -2,7 +2,9 @@ import html as _html
 from typing import Optional
 
 import streamlit as st
-from langfuse_ollama.core import ollama_client as oc
+from langfuse_ollama.adapters.langfuse_ollama import get_gateway
+from langfuse_ollama.domain.entities import ChatMessage, ChatRequest
+from langfuse_ollama.use_cases import chat as chat_uc
 from langfuse_ollama.ui.sidebar import SidebarConfig
 
 
@@ -36,12 +38,21 @@ def render(cfg: SidebarConfig) -> None:
             unsafe_allow_html=True,
         )
 
-    full_messages = [{"role": "system", "content": cfg.system_prompt}] + [
-        {"role": m["role"], "content": m["content"]} for m in st.session_state.messages
-    ]
+    request = chat_uc.make_chat_request(
+        history=[ChatMessage(role=m["role"], content=m["content"])
+                 for m in st.session_state.messages],
+        system_prompt=cfg.system_prompt,
+        model=cfg.model,
+        session_id=st.session_state.session_id,
+        user_id=cfg.user_id,
+        trace_name=cfg.trace_name,
+        tags=cfg.tags,
+        temperature=cfg.temperature,
+        max_tokens=cfg.max_tokens,
+    )
 
     with st.spinner(f"⏳ {cfg.model} thinking…"):
-        reply = _call_model(cfg, full_messages)
+        reply = _call_model(cfg, request)
 
     if reply:
         st.session_state.messages.append(
@@ -50,8 +61,9 @@ def render(cfg: SidebarConfig) -> None:
         st.rerun()
 
 
-def _client(cfg: SidebarConfig):
-    return oc.get_chat_client(
+def _gateway(cfg: SidebarConfig):
+    """Composition root del chat: resuelve el adapter para la config actual."""
+    return get_gateway(
         ollama_url=cfg.ollama_url,
         lf_public_key=cfg.lf_public_key,
         lf_secret_key=cfg.lf_secret_key,
@@ -59,28 +71,17 @@ def _client(cfg: SidebarConfig):
     )
 
 
-def _call_model(cfg: SidebarConfig, full_messages: list) -> Optional[str]:
+def _call_model(cfg: SidebarConfig, request: ChatRequest) -> Optional[str]:
     if cfg.use_streaming:
-        return _stream(cfg, full_messages)
-    return _complete(cfg, full_messages)
+        return _stream(cfg, request)
+    return _complete(cfg, request)
 
 
-def _stream(cfg: SidebarConfig, full_messages: list) -> Optional[str]:
+def _stream(cfg: SidebarConfig, request: ChatRequest) -> Optional[str]:
     partial = ""
     placeholder = st.empty()
     try:
-        for chunk in oc.chat_stream(
-            messages=full_messages,
-            model=cfg.model,
-            session_id=st.session_state.session_id,
-            user_id=cfg.user_id,
-            trace_name=cfg.trace_name,
-            tags=cfg.tags,
-            temperature=cfg.temperature,
-            max_tokens=cfg.max_tokens,
-            client=_client(cfg),
-            lf_public_key=cfg.lf_public_key,
-        ):
+        for chunk in chat_uc.stream_turn(_gateway(cfg), request):
             partial += chunk
             placeholder.markdown(
                 f'<div class="chat-ai" data-model="{_html.escape(cfg.model)}">{_html.escape(partial)}▌</div>',
@@ -93,20 +94,9 @@ def _stream(cfg: SidebarConfig, full_messages: list) -> Optional[str]:
         return None
 
 
-def _complete(cfg: SidebarConfig, full_messages: list) -> Optional[str]:
+def _complete(cfg: SidebarConfig, request: ChatRequest) -> Optional[str]:
     try:
-        return oc.chat_complete(
-            messages=full_messages,
-            model=cfg.model,
-            session_id=st.session_state.session_id,
-            user_id=cfg.user_id,
-            trace_name=cfg.trace_name,
-            tags=cfg.tags,
-            temperature=cfg.temperature,
-            max_tokens=cfg.max_tokens,
-            client=_client(cfg),
-            lf_public_key=cfg.lf_public_key,
-        )
+        return chat_uc.complete_turn(_gateway(cfg), request)
     except Exception as e:
         st.error(f"Completion error: {e}")
         return None

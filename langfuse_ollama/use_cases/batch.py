@@ -1,6 +1,6 @@
 """
-Lógica de dominio para batch de prompts JSONL — compartida por la UI
-(batch_tab) y el CLI (trace_cli). Sin dependencias de Streamlit.
+Caso de uso: batch de prompts JSONL — compartido por la UI (batch_tab) y el
+CLI (trace_cli). Depende solo del dominio y del puerto ChatGateway.
 
 Formato por línea: objeto JSON con clave obligatoria `prompt`; el resto de
 claves (model, system, user_id, trace_name, tags, temperature, max_tokens)
@@ -8,23 +8,14 @@ sobreescriben los defaults para esa entrada.
 """
 
 import json
-from dataclasses import dataclass, replace
-from typing import List, Optional, Tuple
+from dataclasses import replace
+from typing import Callable, List, Optional, Tuple
 
-from langfuse_ollama.core import ollama_client as oc
+from langfuse_ollama.domain.entities import BatchDefaults, ChatMessage, new_session_id
+from langfuse_ollama.domain.ports import ChatGateway
+from langfuse_ollama.use_cases.chat import make_chat_request
 
 OVERRIDE_KEYS = ("model", "system", "user_id", "trace_name", "temperature", "max_tokens")
-
-
-@dataclass(frozen=True)
-class BatchDefaults:
-    model: str
-    system: str
-    user_id: str
-    trace_name: str
-    tags: List[str]
-    temperature: float
-    max_tokens: int
 
 
 def parse_jsonl(text: str) -> Tuple[List[Tuple[int, dict]], List[Tuple[int, str]]]:
@@ -68,20 +59,31 @@ def resolve_params(entry: dict, defaults: BatchDefaults) -> BatchDefaults:
 
 
 def run_entry(
+    gateway: ChatGateway,
     line_num: int,
     entry: dict,
     defaults: BatchDefaults,
-    client=None,
-    lf_public_key: Optional[str] = None,
-    chat_fn=None,
+    on_chunk: Optional[Callable[[str], None]] = None,
 ) -> dict:
     """
-    Ejecuta una entrada del batch en su propia sesión Langfuse.
-    Retorna un registro de resultado (con `error` si la llamada falló).
+    Ejecuta una entrada del batch en su propia sesión de trace.
+    Con `on_chunk` la respuesta se consume en streaming, notificando cada
+    chunk (p. ej. para imprimirlo en el CLI). Retorna un registro de
+    resultado serializable (con `error` si la llamada falló).
     """
     p = resolve_params(entry, defaults)
-    session_id = oc.new_session_id()
-    chat = chat_fn or oc.chat_complete
+    session_id = new_session_id()
+    request = make_chat_request(
+        history=[ChatMessage(role="user", content=entry["prompt"])],
+        system_prompt=p.system,
+        model=p.model,
+        session_id=session_id,
+        user_id=p.user_id,
+        trace_name=p.trace_name,
+        tags=p.tags,
+        temperature=p.temperature,
+        max_tokens=p.max_tokens,
+    )
 
     result = {
         "line":       line_num,
@@ -92,21 +94,14 @@ def run_entry(
         "error":      None,
     }
     try:
-        result["response"] = chat(
-            messages=[
-                {"role": "system", "content": p.system},
-                {"role": "user",   "content": entry["prompt"]},
-            ],
-            model=p.model,
-            session_id=session_id,
-            user_id=p.user_id,
-            trace_name=p.trace_name,
-            tags=p.tags,
-            temperature=p.temperature,
-            max_tokens=p.max_tokens,
-            client=client,
-            lf_public_key=lf_public_key,
-        )
+        if on_chunk is not None:
+            chunks = []
+            for chunk in gateway.stream(request):
+                on_chunk(chunk)
+                chunks.append(chunk)
+            result["response"] = "".join(chunks)
+        else:
+            result["response"] = gateway.complete(request)
     except Exception as exc:
         result["error"] = str(exc)
     return result
